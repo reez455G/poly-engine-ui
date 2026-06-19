@@ -17,7 +17,7 @@ import {
   X
 } from 'lucide-react';
 
-const API_BASE = `http://${window.location.hostname}:4175`;
+const API_BASE = window.location.origin;
 
 const getMarketTimestamp = (slug: string): number => {
   const parts = slug.split('-');

@@ -1,11 +1,9 @@
-import { useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
 import { 
   Zap, 
   Settings2,
   History as HistoryIcon,
-  ExternalLink,
-  ShieldAlert
+  ExternalLink
 } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import History from './pages/History';
@@ -70,68 +68,8 @@ function Layout({ children }: { children: React.ReactNode }) {
 }
 
 function App() {
-  const [token, setToken] = useState<string | null>(localStorage.getItem('it_hub_token'));
-  const [isVerifying, setIsVerifying] = useState(true);
 
-  useEffect(() => {
-    // Phase 3 Fix: Handle SSO token from URL
-    const urlParams = new URLSearchParams(window.location.search);
-    const ssoToken = urlParams.get('token');
-    
-    let currentToken = token;
-    if (ssoToken) {
-        localStorage.setItem('it_hub_token', ssoToken);
-        currentToken = ssoToken;
-        setToken(ssoToken);
-        // Clean URL
-        window.history.replaceState({}, document.title, window.location.pathname);
-    }
 
-    if (currentToken) {
-        fetch(`http://${window.location.hostname}:4176/api/verify`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ token: currentToken })
-        })
-        .then(res => res.json())
-        .then(data => {
-            if (!data.valid) {
-                localStorage.removeItem('it_hub_token');
-                setToken(null);
-            }
-        })
-        .catch(() => {})
-        .finally(() => setIsVerifying(false));
-    } else {
-        setIsVerifying(false);
-    }
-  }, [token]);
-
-  if (isVerifying) {
-    return (
-        <div className="min-h-screen bg-[#020617] flex items-center justify-center">
-            <div className="w-12 h-12 border-4 border-pink-500 border-t-transparent rounded-full animate-spin" />
-        </div>
-    );
-  }
-
-  if (!token) {
-      return (
-          <div className="min-h-screen bg-[#020617] flex flex-col items-center justify-center p-6 text-center">
-              <div className="w-20 h-20 bg-red-500/10 border border-red-500/20 rounded-[2rem] flex items-center justify-center mb-8 shadow-2xl shadow-red-500/10">
-                  <ShieldAlert className="w-10 h-10 text-red-500" />
-              </div>
-              <h1 className="text-3xl font-black text-white mb-4 uppercase tracking-tighter">Access Restricted</h1>
-              <p className="text-slate-400 max-w-sm mb-10 font-medium">This terminal requires a valid Enterprise Security Token. Please login via Project Hub.</p>
-              <a 
-                href={`http://${window.location.hostname}:4173`} 
-                className="bg-white text-black font-black px-10 py-4 rounded-2xl hover:bg-slate-200 transition-all active:scale-95 uppercase tracking-widest text-xs"
-              >
-                Return to Gateway
-              </a>
-          </div>
-      );
-  }
 
   return (
     <BrowserRouter>

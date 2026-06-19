@@ -19,7 +19,7 @@ import {
   RotateCcw
 } from 'lucide-react';
 
-const API_BASE = `http://${window.location.hostname}:4175`;
+const API_BASE = window.location.origin;
 
 const AVAILABLE_STRATEGIES = [
   'simulation', 'late-entry', 'steady-scalp', 'iron-lock', 
@@ -80,6 +80,12 @@ const PARAM_METADATA: Record<string, Record<string, { label: string, step: strin
     protectConfirmMs: { label: 'Confirm Delay (ms)', step: '100', min: '0' },
     protectConfirmTicks: { label: 'Confirm Ticks', step: '1', min: '1' },
     maxSpread: { label: 'Max Spread (Ratio)', step: '0.01', min: '0.001' }
+  },
+  'sure-win-sniper': {
+    minGapBtc: { label: 'Min Gap ($)', step: '1', min: '1' },
+    maxEntryPrice: { label: 'Max Entry Price', step: '0.01', min: '0.01' },
+    minLiquidity: { label: 'Min Liquidity ($)', step: '1', min: '1' },
+    sharesToBuy: { label: 'Shares to Buy', step: '1', min: '1' }
   }
 };
 
@@ -184,25 +190,50 @@ export default function Dashboard() {
           setIsRunning(activeArray.length > 0);
           setRunningProcesses(activeArray);
           
-          let totalPnl = 0;
-          let totalTrades = 0;
-          let totalAllocatedBalance = 0;
+          let totalSimPnl = 0;
+          let totalSimTrades = 0;
+          let totalSimAllocated = 0;
+          let simCount = 0;
+
+          let totalProdPnl = 0;
+          let totalProdTrades = 0;
+          let totalProdAllocated = 0;
+          let prodCount = 0;
           
           activeArray.forEach((a: any) => {
               const allocated = parseFloat(a.config?.balance || '0');
-              totalAllocatedBalance += allocated;
+              const isProd = a.config?.prod === true || a.config?.prod === 'true';
               
-              if (a.state) {
-                  totalPnl += a.state.sessionPnl || 0;
-                  totalTrades += a.state.completedMarkets?.length || 0;
+              if (isProd) {
+                  totalProdAllocated += allocated;
+                  prodCount++;
+                  if (a.state) {
+                      totalProdPnl += a.state.sessionPnl || 0;
+                      totalProdTrades += a.state.completedMarkets?.length || 0;
+                  }
+              } else {
+                  totalSimAllocated += allocated;
+                  simCount++;
+                  if (a.state) {
+                      totalSimPnl += a.state.sessionPnl || 0;
+                      totalSimTrades += a.state.completedMarkets?.length || 0;
+                  }
               }
           });
           
           setActiveStats({
-              pnl: totalPnl,
-              trades: totalTrades,
-              runningCount: activeArray.length,
-              allocatedBalance: totalAllocatedBalance
+              sim: {
+                  pnl: totalSimPnl,
+                  trades: totalSimTrades,
+                  runningCount: simCount,
+                  allocatedBalance: totalSimAllocated
+              },
+              prod: {
+                  pnl: totalProdPnl,
+                  trades: totalProdTrades,
+                  runningCount: prodCount,
+                  allocatedBalance: totalProdAllocated
+              }
           });
       } catch (e) {
           console.error("Status fetch error:", e);
@@ -288,6 +319,109 @@ export default function Dashboard() {
       ? current.filter(s => s !== source)
       : [...current, source];
     setInputs({ ...inputs, tickerSources: next.join(',') });
+  };
+
+  const simProcesses = runningProcesses.filter((proc) => proc.config?.prod !== true && proc.config?.prod !== 'true');
+  const prodProcesses = runningProcesses.filter((proc) => proc.config?.prod === true || proc.config?.prod === 'true');
+
+  const renderProcessCard = (proc: any) => {
+    const cnf = proc.config || {};
+    const st = proc.state || {};
+    const pnl = st.sessionPnl || 0;
+    const hourlyPnl = st.hourlyPnl || 0;
+    const hourlyTarget = st.hourlyProfitTarget || Number(cnf.hourlyProfitTarget || 0);
+    const hourlyPaused = !!st.hourlyEntryPaused;
+    const hourlyResetAt = st.hourlyResetAtMs ? new Date(st.hourlyResetAtMs).toLocaleTimeString() : '—';
+    const hourlyResetCount = st.hourlyResetCount || 0;
+    const activePositions = (st.activeMarkets || [])
+      .flatMap((market: any) => (market.orderHistory || [])
+        .filter((order: any) => order.action === 'buy')
+        .map((order: any) => ({ slug: market.slug, marketTime: marketTimeFromSlug(market.slug), ...order }))
+      );
+    const activePositionLabel = activePositions.length
+      ? activePositions.map((order: any) => `${order.marketTime} · ${order.shares || 1} @ ${Number(order.price).toFixed(2)}`).join(', ')
+      : 'None';
+    const settledPositions = (st.completedMarkets || []).filter((market: any) => (market.orderHistory || []).some((order: any) => order.action === 'buy'));
+    const latestSettled = settledPositions[settledPositions.length - 1];
+    const latestBuy = latestSettled?.orderHistory?.find((order: any) => order.action === 'buy');
+    const latestSettledLabel = latestSettled && latestBuy
+      ? `${marketTimeFromSlug(latestSettled.slug)} · ${Number(latestSettled.pnl || 0) >= 0 ? '+' : ''}${Number(latestSettled.pnl || 0).toFixed(2)} · ${latestBuy.action.toUpperCase()} @ ${Number(latestBuy.price).toFixed(2)}`
+      : 'No settled position';
+
+    return (
+      <div key={proc.processId} className={`p-5 bg-black/40 border rounded-2xl text-left animate-in zoom-in-95 transition-colors min-w-0 overflow-hidden ${
+        cnf.prod === true || cnf.prod === 'true'
+        ? 'border-red-500/10 hover:border-red-500/30'
+        : 'border-cyan-500/10 hover:border-cyan-500/30'
+      }`}>
+          <div className="flex justify-between items-start gap-3 mb-3">
+              <span className="min-w-0 text-sm font-black uppercase text-emerald-500 flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+                  <span className="truncate">{cnf.asset || proc.processId}</span>
+                  <span className={`text-[8px] font-black px-1.5 py-0.5 rounded uppercase shrink-0 ${
+                    cnf.prod === true || cnf.prod === 'true'
+                    ? 'bg-red-500/20 text-red-400 border border-red-500/30'
+                    : 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
+                  }`}>
+                    {cnf.prod === true || cnf.prod === 'true' ? 'Prod' : 'Sim'}
+                  </span>
+              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                    onClick={() => handleRestartSingle(proc.processId)}
+                    className="p-1.5 rounded-lg bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500 hover:text-white transition-colors"
+                    title="Restart this session"
+                >
+                    <RotateCcw className="w-4 h-4" />
+                </button>
+                <button 
+                    onClick={() => handleStopSingle(proc.processId)}
+                    className="p-1.5 rounded-lg bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white transition-colors"
+                    title="Stop this session"
+                >
+                    <Square className="w-4 h-4 fill-current" />
+                </button>
+              </div>
+          </div>
+          <div className="grid grid-cols-1 gap-4">
+              <div className="min-w-0 text-[11px] text-slate-400 font-mono space-y-1.5">
+                <div className="grid grid-cols-[64px_minmax(0,1fr)] gap-2"><span className="text-slate-500">Strategy</span><span className="text-white truncate" title={cnf.strategy}>{cnf.strategy}</span></div>
+                <div className="grid grid-cols-[64px_minmax(0,1fr)] gap-2"><span className="text-slate-500">Ticker</span><span className="text-cyan-300 truncate" title={cnf.tickerSources || 'binance,chainlink,coinbase'}>{cnf.tickerSources || 'binance,chainlink,coinbase'}</span></div>
+                <div className="grid grid-cols-[64px_minmax(0,1fr)] gap-2"><span className="text-slate-500">Runtime</span><span className="text-pink-300 truncate font-semibold" title={formatTimeRunning(cnf.startTime)}>{formatTimeRunning(cnf.startTime)}</span></div>
+                <div className="grid grid-cols-[64px_minmax(0,1fr)] gap-2">
+                  <span className="text-slate-500">Hourly</span>
+                  <span className={hourlyPaused ? 'text-amber-300 truncate' : 'text-emerald-300 truncate'}>
+                    {hourlyPnl >= 0 ? '+' : ''}{hourlyPnl.toFixed(2)} / {hourlyTarget > 0 ? `+${hourlyTarget.toFixed(2)}` : 'OFF'}
+                  </span>
+                </div>
+                {hourlyTarget > 0 && (
+                  <>
+                    <div className="grid grid-cols-[64px_minmax(0,1fr)] gap-2"><span className="text-slate-500">Gate</span><span className={hourlyPaused ? 'text-amber-300 truncate' : 'text-emerald-300 truncate'} title={hourlyPaused ? `PAUSED until ${hourlyResetAt}` : `OPEN reset ${hourlyResetAt}`}>{hourlyPaused ? `PAUSED until ${hourlyResetAt}` : `OPEN reset ${hourlyResetAt}`}</span></div>
+                    <div className="grid grid-cols-[64px_minmax(0,1fr)] gap-2"><span className="text-slate-500">Resets</span><span className="text-violet-300">{hourlyResetCount}x</span></div>
+                  </>
+                )}
+                <div className="grid grid-cols-[64px_minmax(0,1fr)] gap-2">
+                  <span className="text-slate-500">Active</span>
+                  <span className={activePositions.length ? 'text-amber-300 truncate' : 'text-slate-500 truncate'} title={activePositionLabel}>
+                    {activePositions.length ? `${activePositions.length} pos · ${activePositionLabel}` : 'No open position'}
+                  </span>
+                </div>
+                <div className="grid grid-cols-[64px_minmax(0,1fr)] gap-2">
+                  <span className="text-slate-500">Latest</span>
+                  <span className={latestSettled ? `${Number(latestSettled.pnl || 0) >= 0 ? 'text-emerald-300' : 'text-red-300'} truncate` : 'text-slate-500 truncate'} title={latestSettled ? `${latestSettled.slug} · ${latestSettledLabel}` : latestSettledLabel}>
+                    {latestSettledLabel}
+                  </span>
+                </div>
+              </div>
+              <div className="flex items-end justify-between gap-3 pt-3 border-t border-white/5">
+                  <div className="text-[8px] uppercase tracking-widest text-slate-500">Session P&L</div>
+                  <div className={`text-sm font-bold whitespace-nowrap ${pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                      {pnl >= 0 ? '+' : ''}{pnl.toFixed(2)} USDC
+                  </div>
+              </div>
+          </div>
+      </div>
+    );
   };
 
   return (
@@ -507,23 +641,74 @@ export default function Dashboard() {
 
         {/* MONITORING DASHBOARD */}
         <section className="lg:col-span-3 space-y-6">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            {[
-              { label: 'Total P&L', value: activeStats?.pnl.toFixed(2) || '0.00', icon: <Activity />, color: (activeStats?.pnl || 0) >= 0 ? 'text-emerald-400' : 'text-red-400' },
-              { label: 'Active Assets', value: activeStats?.runningCount || 0, icon: <Layers />, color: 'text-blue-400' },
-              { label: 'Total Trades', value: activeStats?.trades || 0, icon: <TrendingUp />, color: 'text-purple-400' },
-              { label: 'Live Balance', value: ((activeStats?.allocatedBalance || 0) + (activeStats?.pnl || 0)).toFixed(2), icon: <Wallet />, color: 'text-white' }
-            ].map((stat, i) => (
-              <div key={i} className="bg-slate-900/50 backdrop-blur-xl border border-white/5 p-6 rounded-3xl relative overflow-hidden shadow-xl">
-                <div className="relative z-10">
-                  <div className="flex items-center gap-2 mb-3 text-slate-500">
-                    {cloneElement(stat.icon as ReactElement<any>, { className: "w-3 h-3" })}
-                    <span className="text-[8px] font-black uppercase tracking-widest">{stat.label}</span>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* SIMULATION OVERVIEW PANEL */}
+            <div className="bg-slate-900/50 backdrop-blur-xl border border-cyan-500/10 p-6 rounded-3xl relative overflow-hidden shadow-xl">
+              <div className="absolute top-0 right-0 w-[30%] h-[30%] bg-cyan-500/5 rounded-full blur-[50px] pointer-events-none" />
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-sm font-black uppercase tracking-widest text-white flex items-center gap-2">
+                  <Activity className="w-4 h-4 text-cyan-400 animate-pulse" />
+                  Simulation Overview
+                </h3>
+                <span className="text-[9px] font-black px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 uppercase">Demo</span>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="p-3 bg-black/30 rounded-xl border border-white/5">
+                  <div className="text-[8px] font-black text-slate-500 uppercase tracking-widest mb-1 flex items-center gap-1"><Activity className="w-2.5 h-2.5" /> Total P&L</div>
+                  <div className={`text-xl font-black ${(activeStats?.sim?.pnl || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {(activeStats?.sim?.pnl || 0) >= 0 ? '+' : ''}{(activeStats?.sim?.pnl || 0).toFixed(2)} USDC
                   </div>
-                  <div className={`text-3xl font-black ${stat.color}`}>{stat.value}</div>
+                </div>
+                <div className="p-3 bg-black/30 rounded-xl border border-white/5">
+                  <div className="text-[8px] font-black text-slate-500 uppercase tracking-widest mb-1 flex items-center gap-1"><Layers className="w-2.5 h-2.5" /> Active Assets</div>
+                  <div className="text-xl font-black text-cyan-400">{activeStats?.sim?.runningCount || 0}</div>
+                </div>
+                <div className="p-3 bg-black/30 rounded-xl border border-white/5">
+                  <div className="text-[8px] font-black text-slate-500 uppercase tracking-widest mb-1 flex items-center gap-1"><TrendingUp className="w-2.5 h-2.5" /> Total Trades</div>
+                  <div className="text-xl font-black text-purple-400">{activeStats?.sim?.trades || 0}</div>
+                </div>
+                <div className="p-3 bg-black/30 rounded-xl border border-white/5">
+                  <div className="text-[8px] font-black text-slate-500 uppercase tracking-widest mb-1 flex items-center gap-1"><Wallet className="w-2.5 h-2.5" /> Live Balance</div>
+                  <div className="text-xl font-black text-white">
+                    {((activeStats?.sim?.allocatedBalance || 0) + (activeStats?.sim?.pnl || 0)).toFixed(2)} USDC
+                  </div>
                 </div>
               </div>
-            ))}
+            </div>
+
+            {/* PRODUCTION OVERVIEW PANEL */}
+            <div className="bg-slate-900/50 backdrop-blur-xl border border-red-500/10 p-6 rounded-3xl relative overflow-hidden shadow-xl">
+              <div className="absolute top-0 right-0 w-[30%] h-[30%] bg-red-500/5 rounded-full blur-[50px] pointer-events-none" />
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-sm font-black uppercase tracking-widest text-white flex items-center gap-2">
+                  <Activity className="w-4 h-4 text-red-500" />
+                  Production Overview
+                </h3>
+                <span className="text-[9px] font-black px-2 py-0.5 rounded bg-red-500/10 text-red-400 border border-red-500/20 uppercase">Real</span>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="p-3 bg-black/30 rounded-xl border border-white/5">
+                  <div className="text-[8px] font-black text-slate-500 uppercase tracking-widest mb-1 flex items-center gap-1"><Activity className="w-2.5 h-2.5" /> Total P&L</div>
+                  <div className={`text-xl font-black ${(activeStats?.prod?.pnl || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {(activeStats?.prod?.pnl || 0) >= 0 ? '+' : ''}{(activeStats?.prod?.pnl || 0).toFixed(2)} USDC
+                  </div>
+                </div>
+                <div className="p-3 bg-black/30 rounded-xl border border-white/5">
+                  <div className="text-[8px] font-black text-slate-500 uppercase tracking-widest mb-1 flex items-center gap-1"><Layers className="w-2.5 h-2.5" /> Active Assets</div>
+                  <div className="text-xl font-black text-red-400">{activeStats?.prod?.runningCount || 0}</div>
+                </div>
+                <div className="p-3 bg-black/30 rounded-xl border border-white/5">
+                  <div className="text-[8px] font-black text-slate-500 uppercase tracking-widest mb-1 flex items-center gap-1"><TrendingUp className="w-2.5 h-2.5" /> Total Trades</div>
+                  <div className="text-xl font-black text-purple-400">{activeStats?.prod?.trades || 0}</div>
+                </div>
+                <div className="p-3 bg-black/30 rounded-xl border border-white/5">
+                  <div className="text-[8px] font-black text-slate-500 uppercase tracking-widest mb-1 flex items-center gap-1"><Wallet className="w-2.5 h-2.5" /> Live Balance</div>
+                  <div className="text-xl font-black text-white">
+                    {((activeStats?.prod?.allocatedBalance || 0) + (activeStats?.prod?.pnl || 0)).toFixed(2)} USDC
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
 
           {/* LIVE TICKER VALUES */}
@@ -571,105 +756,45 @@ export default function Dashboard() {
 
           {/* ACTIVE SESSIONS CARDS */}
           {isRunning && (
-            <div className="bg-slate-900/50 backdrop-blur-xl border border-white/5 rounded-3xl p-8 shadow-xl">
-              <div className="flex justify-between items-center mb-6">
-                 <h2 className="text-xl font-bold flex items-center gap-3 text-white"><PlayCircle className="w-5 h-5 text-pink-500" /> Active Sessions</h2>
+            <div className="space-y-6">
+              {/* PANEL SIMULASI */}
+              <div className="bg-slate-900/50 backdrop-blur-xl border border-cyan-500/10 rounded-3xl p-8 shadow-xl relative overflow-hidden">
+                <div className="absolute top-0 right-0 w-[20%] h-[20%] bg-cyan-500/5 rounded-full blur-[40px] pointer-events-none" />
+                <div className="flex justify-between items-center mb-6 border-b border-white/5 pb-4">
+                   <h2 className="text-xl font-bold flex items-center gap-3 text-white">
+                     <PlayCircle className="w-5 h-5 text-cyan-400 animate-pulse" /> 
+                     Active Simulation Sessions
+                     <span className="text-[10px] font-black px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 uppercase">Demo</span>
+                   </h2>
+                   <span className="text-xs font-bold text-slate-500">{simProcesses.length} Running</span>
+                </div>
+                {simProcesses.length === 0 ? (
+                  <p className="text-xs italic text-slate-500">No active simulation sessions running.</p>
+                ) : (
+                  <div className="w-full grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {simProcesses.map((proc) => renderProcessCard(proc))}
+                  </div>
+                )}
               </div>
-              <div className="w-full grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {runningProcesses.map((proc) => {
-                    const cnf = proc.config || {};
-                    const st = proc.state || {};
-                    const pnl = st.sessionPnl || 0;
-                    const hourlyPnl = st.hourlyPnl || 0;
-                    const hourlyTarget = st.hourlyProfitTarget || Number(cnf.hourlyProfitTarget || 0);
-                    const hourlyPaused = !!st.hourlyEntryPaused;
-                    const hourlyResetAt = st.hourlyResetAtMs ? new Date(st.hourlyResetAtMs).toLocaleTimeString() : '—';
-                    const hourlyResetCount = st.hourlyResetCount || 0;
-                    const activePositions = (st.activeMarkets || [])
-                      .flatMap((market: any) => (market.orderHistory || [])
-                        .filter((order: any) => order.action === 'buy')
-                        .map((order: any) => ({ slug: market.slug, marketTime: marketTimeFromSlug(market.slug), ...order }))
-                      );
-                    const activePositionLabel = activePositions.length
-                      ? activePositions.map((order: any) => `${order.marketTime} · ${order.shares || 1} @ ${Number(order.price).toFixed(2)}`).join(', ')
-                      : 'None';
-                    const settledPositions = (st.completedMarkets || []).filter((market: any) => (market.orderHistory || []).some((order: any) => order.action === 'buy'));
-                    const latestSettled = settledPositions[settledPositions.length - 1];
-                    const latestBuy = latestSettled?.orderHistory?.find((order: any) => order.action === 'buy');
-                    const latestSettledLabel = latestSettled && latestBuy
-                      ? `${marketTimeFromSlug(latestSettled.slug)} · ${Number(latestSettled.pnl || 0) >= 0 ? '+' : ''}${Number(latestSettled.pnl || 0).toFixed(2)} · ${latestBuy.action.toUpperCase()} @ ${Number(latestBuy.price).toFixed(2)}`
-                      : 'No settled position';
-                    
-                    return (
-                    <div key={proc.processId} className="p-5 bg-black/40 border border-white/10 rounded-2xl text-left animate-in zoom-in-95 hover:border-pink-500/30 transition-colors min-w-0 overflow-hidden">
-                        <div className="flex justify-between items-start gap-3 mb-3">
-                            <span className="min-w-0 text-sm font-black uppercase text-emerald-500 flex items-center gap-2">
-                                <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
-                                <span className="truncate">{cnf.asset || proc.processId}</span>
-                                <span className={`text-[8px] font-black px-1.5 py-0.5 rounded uppercase shrink-0 ${
-                                  cnf.prod === true || cnf.prod === 'true'
-                                  ? 'bg-red-500/20 text-red-400 border border-red-500/30'
-                                  : 'bg-cyan-500/20 text-cyan-400 border border-cyan-500/30'
-                                }`}>
-                                  {cnf.prod === true || cnf.prod === 'true' ? 'Prod' : 'Sim'}
-                                </span>
-                            </span>
-                            <div className="flex items-center gap-2 shrink-0">
-                              <button
-                                  onClick={() => handleRestartSingle(proc.processId)}
-                                  className="p-1.5 rounded-lg bg-cyan-500/10 text-cyan-400 hover:bg-cyan-500 hover:text-white transition-colors"
-                                  title="Restart this session"
-                              >
-                                  <RotateCcw className="w-4 h-4" />
-                              </button>
-                              <button 
-                                  onClick={() => handleStopSingle(proc.processId)}
-                                  className="p-1.5 rounded-lg bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white transition-colors"
-                                  title="Stop this session"
-                              >
-                                  <Square className="w-4 h-4 fill-current" />
-                              </button>
-                            </div>
-                        </div>
-                        <div className="grid grid-cols-1 gap-4">
-                            <div className="min-w-0 text-[11px] text-slate-400 font-mono space-y-1.5">
-                              <div className="grid grid-cols-[64px_minmax(0,1fr)] gap-2"><span className="text-slate-500">Strategy</span><span className="text-white truncate" title={cnf.strategy}>{cnf.strategy}</span></div>
-                              <div className="grid grid-cols-[64px_minmax(0,1fr)] gap-2"><span className="text-slate-500">Ticker</span><span className="text-cyan-300 truncate" title={cnf.tickerSources || 'binance,chainlink,coinbase'}>{cnf.tickerSources || 'binance,chainlink,coinbase'}</span></div>
-                              <div className="grid grid-cols-[64px_minmax(0,1fr)] gap-2"><span className="text-slate-500">Runtime</span><span className="text-pink-300 truncate font-semibold" title={formatTimeRunning(cnf.startTime)}>{formatTimeRunning(cnf.startTime)}</span></div>
-                              <div className="grid grid-cols-[64px_minmax(0,1fr)] gap-2">
-                                <span className="text-slate-500">Hourly</span>
-                                <span className={hourlyPaused ? 'text-amber-300 truncate' : 'text-emerald-300 truncate'}>
-                                  {hourlyPnl >= 0 ? '+' : ''}{hourlyPnl.toFixed(2)} / {hourlyTarget > 0 ? `+${hourlyTarget.toFixed(2)}` : 'OFF'}
-                                </span>
-                              </div>
-                              {hourlyTarget > 0 && (
-                                <>
-                                  <div className="grid grid-cols-[64px_minmax(0,1fr)] gap-2"><span className="text-slate-500">Gate</span><span className={hourlyPaused ? 'text-amber-300 truncate' : 'text-emerald-300 truncate'} title={hourlyPaused ? `PAUSED until ${hourlyResetAt}` : `OPEN reset ${hourlyResetAt}`}>{hourlyPaused ? `PAUSED until ${hourlyResetAt}` : `OPEN reset ${hourlyResetAt}`}</span></div>
-                                  <div className="grid grid-cols-[64px_minmax(0,1fr)] gap-2"><span className="text-slate-500">Resets</span><span className="text-violet-300">{hourlyResetCount}x</span></div>
-                                </>
-                              )}
-                              <div className="grid grid-cols-[64px_minmax(0,1fr)] gap-2">
-                                <span className="text-slate-500">Active</span>
-                                <span className={activePositions.length ? 'text-amber-300 truncate' : 'text-slate-500 truncate'} title={activePositionLabel}>
-                                  {activePositions.length ? `${activePositions.length} pos · ${activePositionLabel}` : 'No open position'}
-                                </span>
-                              </div>
-                              <div className="grid grid-cols-[64px_minmax(0,1fr)] gap-2">
-                                <span className="text-slate-500">Latest</span>
-                                <span className={latestSettled ? `${Number(latestSettled.pnl || 0) >= 0 ? 'text-emerald-300' : 'text-red-300'} truncate` : 'text-slate-500 truncate'} title={latestSettled ? `${latestSettled.slug} · ${latestSettledLabel}` : latestSettledLabel}>
-                                  {latestSettledLabel}
-                                </span>
-                              </div>
-                            </div>
-                            <div className="flex items-end justify-between gap-3 pt-3 border-t border-white/5">
-                                <div className="text-[8px] uppercase tracking-widest text-slate-500">Session P&L</div>
-                                <div className={`text-sm font-bold whitespace-nowrap ${pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                                    {pnl >= 0 ? '+' : ''}{pnl.toFixed(2)} USDC
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                )})}
+
+              {/* PANEL PROD */}
+              <div className="bg-slate-900/50 backdrop-blur-xl border border-red-500/10 rounded-3xl p-8 shadow-xl relative overflow-hidden">
+                <div className="absolute top-0 right-0 w-[20%] h-[20%] bg-red-500/5 rounded-full blur-[40px] pointer-events-none" />
+                <div className="flex justify-between items-center mb-6 border-b border-white/5 pb-4">
+                   <h2 className="text-xl font-bold flex items-center gap-3 text-white">
+                     <PlayCircle className="w-5 h-5 text-red-500 animate-pulse" /> 
+                     Active Production Sessions
+                     <span className="text-[10px] font-black px-2 py-0.5 rounded bg-red-500/10 text-red-400 border border-red-500/20 uppercase">Real Money</span>
+                   </h2>
+                   <span className="text-xs font-bold text-slate-500">{prodProcesses.length} Running</span>
+                </div>
+                {prodProcesses.length === 0 ? (
+                  <p className="text-xs italic text-slate-500">No active production sessions running.</p>
+                ) : (
+                  <div className="w-full grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {prodProcesses.map((proc) => renderProcessCard(proc))}
+                  </div>
+                )}
               </div>
             </div>
           )}

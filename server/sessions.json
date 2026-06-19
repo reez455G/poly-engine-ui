@@ -1,0 +1,54 @@
+[
+  {
+    "processId": "btc-late-down",
+    "asset": "btc",
+    "strategy": "late-down",
+    "config": {
+      "balance": "50",
+      "maxLoss": "20",
+      "maxProfit": "50",
+      "tradeAmount": "10",
+      "strategy": "late-down",
+      "rounds": "700",
+      "tickers": [
+        "btc"
+      ],
+      "asset": "btc",
+      "processId": "btc-late-down",
+      "startTime": 1779925144288
+    },
+    "stats": {
+      "pnl": -4.42,
+      "trades": 31
+    },
+    "endTime": 1779925152935,
+    "exitCode": null,
+    "id": 1779925153053
+  },
+  {
+    "processId": "btc-steady-scalp",
+    "asset": "btc",
+    "strategy": "steady-scalp",
+    "config": {
+      "balance": "100",
+      "maxLoss": "20",
+      "maxProfit": "50",
+      "tradeAmount": "10",
+      "strategy": "steady-scalp",
+      "rounds": "0",
+      "tickers": [
+        "btc"
+      ],
+      "asset": "btc",
+      "processId": "btc-steady-scalp",
+      "startTime": 1779877289603
+    },
+    "stats": {
+      "pnl": -2.75,
+      "trades": 145
+    },
+    "endTime": 1779877303654,
+    "exitCode": null,
+    "id": 1779877303654
+  }
+]

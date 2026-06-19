@@ -1,0 +1,66 @@
+[
+  {
+    "strategy": "steady-scalp",
+    "version": "v1.5",
+    "date": "2026-05-30",
+    "type": "tuning",
+    "description": "Pemberlakuan konfigurasi dinamis dan penyesuaian manajemen risiko lanjutan.",
+    "changes": [
+      "Target profit (TP) dinaikkan dari 0.15 menjadi 0.20 USDC.",
+      "Jendela waktu masuk dipersempit menjadi 120s - 200s sebelum penutupan (sebelumnya 30s - 240s).",
+      "Batas harga masuk minimal ditingkatkan dari 0.30 menjadi 0.40 USDC.",
+      "Pengetatan filter spread maksimal sebesar 0.03 USDC.",
+      "Penambahan filter dominasi likuiditas bid lawan.",
+      "Penambahan filter penyelaras arah gap (gap-aligned) dan regime pasar (regime-aligned).",
+      "Implementasi Stop-Loss otomatis bergeser ke level impas (Break-even) ketika best bid naik +0.05 USDC.",
+      "Penerapan sistem poin bahaya (Protect Score System) dengan batas >= 4 untuk keluar darurat (emergency exit).",
+      "Jeda konfirmasi protect 3000 ms atau 2 tick untuk mencegah pemicu salah (false protect)."
+    ]
+  },
+  {
+    "strategy": "steady-scalp",
+    "version": "v1.4",
+    "date": "2026-05-15",
+    "type": "update",
+    "description": "Strategi dasar Trend-Aware Scalper.",
+    "changes": [
+      "Menggunakan indikator Supertrend, ADX, dan Volume Z-Score untuk mengidentifikasi momentum.",
+      "Batas Stop-Loss statis 0.15 USDC dan Profit Target 0.15 USDC.",
+      "Membeli 2 shares secara statis tanpa kalkulasi notional."
+    ]
+  },
+  {
+    "strategy": "iron-lock",
+    "version": "v1.5",
+    "date": "2026-05-29",
+    "type": "tuning",
+    "description": "Fokus pada manajemen volatilitas ekstrem dan optimalisasi eksekusi order.",
+    "changes": [
+      "Membatasi harga masuk optimal di rentang 0.40 - 0.60 USDC (menghindari zona berisiko 0.60 - 0.70).",
+      "Implementasi sekuensing order atomik: menunda TP selama 1 detik setelah Buy untuk memprioritaskan pemantauan Stop-Loss.",
+      "Pemberlakuan Spread-Guard filter maksimal 0.10 USDC untuk mencegah slippage saat crash.",
+      "Optimalisasi kinerja pada regime CHOP yang terbukti sangat menguntungkan secara historis."
+    ]
+  },
+  {
+    "strategy": "certainty-sweeper",
+    "version": "v1.0",
+    "date": "2026-05-10",
+    "type": "update",
+    "description": "Rilis perdana strategi pendeteksi ayunan tren probabilitas tinggi.",
+    "changes": [
+      "Menargetkan aset utama dengan filter ADX > 30 untuk memastikan kekuatan tren.",
+      "Menggunakan konfirmasi volume transaksi tinggi untuk validasi breakout."
+    ]
+  },
+  {
+    "strategy": "late-down-v2",
+    "version": "v2.0",
+    "date": "2026-05-20",
+    "type": "update",
+    "description": "Pembaruan arsitektur deteksi pembalikan tren akhir sesi.",
+    "changes": [
+      "Dioptimalkan khusus untuk mendeteksi penurunan akhir sesi (slot late-down) mendekati waktu penutupan pasar."
+    ]
+  }
+]

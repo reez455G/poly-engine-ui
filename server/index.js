@@ -6,11 +6,15 @@ const fs = require('fs');
 const path = require('path');
 const Redis = require('ioredis');
 const pm2 = require('pm2');
+const { Pool } = require('pg');
 
 const app = express();
 const PORT = 4175;
 const ENGINE_PATH = process.env.ENGINE_PATH || '/opt/poly-engine-trade-late-down';
 const redis = new Redis(); // Connect to native redis
+
+let questDbPool = null;
+let questDbPoolKey = '';
 
 const ASSET_TICKER_META = {
     btc: { label: 'BTC', binanceSymbol: 'BTCUSDT', coinbaseProduct: 'BTC-USD' },
@@ -257,6 +261,7 @@ app.post('/api/start', async (req, res) => {
         const autorestart = true;
 
         const env = { 
+            ...getQuestDbEngineEnv(),
             MARKET_ASSET: asset, 
             TICKER: tickerSources || 'binance,chainlink,coinbase', 
             MAX_SESSION_LOSS: maxLoss, 
@@ -324,6 +329,7 @@ app.post('/api/restart', async (req, res) => {
     const autorestart = true;
 
     const env = {
+        ...getQuestDbEngineEnv(),
         MARKET_ASSET: config.asset,
         TICKER: config.tickerSources || 'binance,chainlink,coinbase',
         MAX_SESSION_LOSS: config.maxLoss,
@@ -380,6 +386,113 @@ app.get('/api/status', async (req, res) => {
 app.get('/api/history', async (req, res) => {
     const data = await redis.get('poly_sessions');
     res.json(data ? JSON.parse(data) : []);
+});
+
+app.get('/api/analytics/pnl-by-strategy', async (req, res) => {
+    const where = analyticsFilters(req.query);
+    const limit = parseAnalyticsLimit(req.query.limit, 100, 500);
+    const sql = `
+        SELECT
+          strategy,
+          asset,
+          sum(pnl) AS total_pnl,
+          avg(pnl) AS avg_pnl,
+          count() AS markets,
+          sum(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) AS wins,
+          sum(CASE WHEN pnl <= 0 THEN 1 ELSE 0 END) AS losses
+        FROM market_results
+        WHERE ${where}
+        GROUP BY strategy, asset
+        ORDER BY total_pnl DESC
+        LIMIT ${limit}`;
+    return questDbQuery(res, sql);
+});
+
+app.get('/api/analytics/orderbook-spread', async (req, res) => {
+    const where = analyticsFilters(req.query);
+    const limit = parseAnalyticsLimit(req.query.limit, 500, 2000);
+    const sql = `
+        SELECT
+          timestamp,
+          asset,
+          strategy,
+          side,
+          avg(spread) AS avg_spread,
+          min(spread) AS min_spread,
+          max(spread) AS max_spread,
+          avg(bid_liquidity) AS avg_bid_liquidity,
+          avg(ask_liquidity) AS avg_ask_liquidity
+        FROM orderbook_snapshots
+        WHERE ${where}
+        SAMPLE BY 5m
+        ORDER BY timestamp DESC
+        LIMIT ${limit}`;
+    return questDbQuery(res, sql);
+});
+
+app.get('/api/analytics/hourly-performance', async (req, res) => {
+    const where = analyticsFilters(req.query);
+    const limit = parseAnalyticsLimit(req.query.limit, 500, 2000);
+    const sql = `
+        SELECT
+          hour(timestamp) AS hour,
+          strategy,
+          asset,
+          sum(pnl) AS total_pnl,
+          avg(pnl) AS avg_pnl,
+          count() AS markets,
+          sum(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) AS wins
+        FROM market_results
+        WHERE ${where}
+        GROUP BY hour, strategy, asset
+        ORDER BY total_pnl DESC
+        LIMIT ${limit}`;
+    return questDbQuery(res, sql);
+});
+
+app.get('/api/analytics/strategy-decisions', async (req, res) => {
+    const decision = String(req.query.decision || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+    const whereParts = [analyticsFilters(req.query)];
+    if (decision) whereParts.push(`decision = '${decision}'`);
+    const limit = parseAnalyticsLimit(req.query.limit, 100, 1000);
+    const sql = `
+        SELECT
+          strategy,
+          asset,
+          decision,
+          side,
+          reason,
+          count() AS count,
+          avg(confidence) AS avg_confidence,
+          avg(gap) AS avg_gap,
+          avg(atr) AS avg_atr
+        FROM strategy_decisions
+        WHERE ${whereParts.join(' AND ')}
+        GROUP BY strategy, asset, decision, side, reason
+        ORDER BY count DESC
+        LIMIT ${limit}`;
+    return questDbQuery(res, sql);
+});
+
+app.get('/api/analytics/skip-reasons', async (req, res) => {
+    req.query.decision = 'skip';
+    const where = `${analyticsFilters(req.query)} AND decision = 'skip'`;
+    const limit = parseAnalyticsLimit(req.query.limit, 100, 1000);
+    const sql = `
+        SELECT
+          strategy,
+          asset,
+          side,
+          reason,
+          count() AS count,
+          avg(confidence) AS avg_confidence,
+          avg(gap) AS avg_gap
+        FROM strategy_decisions
+        WHERE ${where}
+        GROUP BY strategy, asset, side, reason
+        ORDER BY count DESC
+        LIMIT ${limit}`;
+    return questDbQuery(res, sql);
 });
 
 async function fetchJsonWithTimeout(url, timeoutMs = 4000) {
@@ -439,6 +552,205 @@ app.get('/api/ticker-values', async (req, res) => {
     }));
 
     res.json({ updatedAt: Date.now(), assets: rows });
+});
+
+app.get('/api/strategies', (req, res) => {
+    try {
+        const indexTsPath = path.join(ENGINE_PATH, 'engine/strategy/index.ts');
+        if (fs.existsSync(indexTsPath)) {
+            const content = fs.readFileSync(indexTsPath, 'utf8');
+            const match = content.match(/export const strategies:\s*Record<string,\s*Strategy>\s*=\s*\{([\s\S]*?)\};/);
+            if (match) {
+                const keysBlock = match[1];
+                const keys = [];
+                const keyRegex = /"([^"]+)"|'([^']+)'|([a-zA-Z0-9_-]+)\s*:/g;
+                let keyMatch;
+                while ((keyMatch = keyRegex.exec(keysBlock)) !== null) {
+                    const key = keyMatch[1] || keyMatch[2] || keyMatch[3];
+                    if (key) keys.push(key);
+                }
+                return res.json(keys);
+            }
+        }
+        // Fallback
+        const settingsPath = path.join(ENGINE_PATH, 'config/strategy-settings.json');
+        if (fs.existsSync(settingsPath)) {
+            const data = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+            return res.json(Object.keys(data));
+        }
+        return res.json(['simulation']);
+    } catch (e) {
+        console.error(e);
+        return res.status(500).json({ error: 'Failed to read strategies' });
+    }
+});
+
+function getEnvConfig() {
+    const envPath = path.join(ENGINE_PATH, '.env');
+    if (!fs.existsSync(envPath)) return {};
+    const content = fs.readFileSync(envPath, 'utf8');
+    const config = {};
+    content.split('\n').forEach(line => {
+        const match = line.match(/^\s*([A-Za-z0-9_]+)\s*=\s*(.*)\s*$/);
+        if (match) {
+            let val = match[2].trim();
+            if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+                val = val.substring(1, val.length - 1);
+            }
+            config[match[1]] = val;
+        }
+    });
+    return config;
+}
+
+function getQuestDbEngineEnv() {
+    const envConfig = getEnvConfig();
+    const read = (key, fallback) => process.env[key] || envConfig[key] || fallback;
+    return {
+        QUESTDB_ENABLED: read('QUESTDB_ENABLED', 'true'),
+        QUESTDB_HOST: read('QUESTDB_HOST', '127.0.0.1'),
+        QUESTDB_ILP_PORT: read('QUESTDB_ILP_PORT', '9009'),
+        QUESTDB_HTTP_URL: read('QUESTDB_HTTP_URL', 'http://127.0.0.1:9000'),
+        QUESTDB_PG_HOST: read('QUESTDB_PG_HOST', read('QUESTDB_HOST', '127.0.0.1')),
+        QUESTDB_PG_PORT: read('QUESTDB_PG_PORT', '8812'),
+        QUESTDB_PG_USER: read('QUESTDB_PG_USER', 'admin'),
+        QUESTDB_PG_PASSWORD: read('QUESTDB_PG_PASSWORD', 'quest'),
+        QUESTDB_PG_DATABASE: read('QUESTDB_PG_DATABASE', 'qdb'),
+        QUESTDB_MAX_QUEUE_SIZE: read('QUESTDB_MAX_QUEUE_SIZE', '5000'),
+        QUESTDB_RECONNECT_DELAY_MS: read('QUESTDB_RECONNECT_DELAY_MS', '5000'),
+        QUESTDB_ORDERBOOK_SAMPLE_MS: read('QUESTDB_ORDERBOOK_SAMPLE_MS', '5000')
+    };
+}
+
+function getQuestDbPgConfig() {
+    const envConfig = getEnvConfig();
+    const read = (key, fallback) => process.env[key] || envConfig[key] || fallback;
+    return {
+        host: read('QUESTDB_PG_HOST', read('QUESTDB_HOST', '127.0.0.1')),
+        port: Number(read('QUESTDB_PG_PORT', '8812')),
+        user: read('QUESTDB_PG_USER', 'admin'),
+        password: read('QUESTDB_PG_PASSWORD', 'quest'),
+        database: read('QUESTDB_PG_DATABASE', 'qdb'),
+        connectionTimeoutMillis: Number(read('QUESTDB_PG_TIMEOUT_MS', '2000')),
+        statement_timeout: Number(read('QUESTDB_PG_STATEMENT_TIMEOUT_MS', '5000')),
+        idleTimeoutMillis: 10000,
+        max: 3
+    };
+}
+
+function getQuestDbPool() {
+    const config = getQuestDbPgConfig();
+    const key = JSON.stringify({ host: config.host, port: config.port, user: config.user, database: config.database });
+    if (!questDbPool || questDbPoolKey !== key) {
+        if (questDbPool) questDbPool.end().catch(() => {});
+        questDbPool = new Pool(config);
+        questDbPoolKey = key;
+        questDbPool.on('error', (err) => console.warn('[questdb] PG pool error:', err.message));
+    }
+    return questDbPool;
+}
+
+function parseAnalyticsLimit(value, fallback = 100, max = 1000) {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+    return Math.min(Math.floor(parsed), max);
+}
+
+function parseAnalyticsWindow(value, fallback = '7d') {
+    const raw = String(value || fallback).trim().toLowerCase();
+    const match = raw.match(/^(\d+)([hdw])$/);
+    if (!match) return fallback;
+    return raw;
+}
+
+function questDbDateFilter(window) {
+    const match = parseAnalyticsWindow(window).match(/^(\d+)([hdw])$/);
+    const amount = match ? Number(match[1]) : 7;
+    const unit = match ? match[2] : 'd';
+    return `timestamp > dateadd('${unit}', -${amount}, now())`;
+}
+
+function analyticsFilters(query, alias = '') {
+    const prefix = alias ? `${alias}.` : '';
+    const filters = [questDbDateFilter(query.window)];
+    const safeAsset = String(query.asset || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
+    const safeStrategy = String(query.strategy || '').trim().replace(/[^a-zA-Z0-9_-]/g, '');
+    if (safeAsset) filters.push(`${prefix}asset = '${safeAsset}'`);
+    if (safeStrategy) filters.push(`${prefix}strategy = '${safeStrategy}'`);
+    return filters.join(' AND ');
+}
+
+function sendQuestDbUnavailable(res, error) {
+    return res.json({ available: false, error: error.message || String(error), rows: [] });
+}
+
+async function questDbQuery(res, sql, params = []) {
+    try {
+        const result = await getQuestDbPool().query(sql, params);
+        return res.json({ available: true, rows: result.rows, updatedAt: Date.now() });
+    } catch (e) {
+        console.warn('[questdb] analytics query failed:', e.message);
+        return sendQuestDbUnavailable(res, e);
+    }
+}
+
+app.get('/api/wallet-balance', async (req, res) => {
+    try {
+        const envConfig = getEnvConfig();
+        const funderAddress = envConfig.POLY_FUNDER_ADDRESS;
+        if (!funderAddress) {
+            return res.status(404).json({ error: 'POLY_FUNDER_ADDRESS not found in .env' });
+        }
+        
+        const padAddress = (addr) => {
+            const clean = addr.startsWith('0x') ? addr.substring(2) : addr;
+            return clean.toLowerCase().padStart(64, '0');
+        };
+        
+        const getBalance = async (tokenAddress, ownerAddress) => {
+            const data = "0x70a08231" + padAddress(ownerAddress);
+            const body = {
+                jsonrpc: "2.0",
+                id: 1,
+                method: "eth_call",
+                params: [
+                    {
+                        to: tokenAddress,
+                        data: data
+                    },
+                    "latest"
+                ]
+            };
+            const rpcRes = await fetch("https://polygon-bor-rpc.publicnode.com", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body)
+            });
+            const json = await rpcRes.json();
+            if (json.error) {
+                throw new Error(json.error.message || JSON.stringify(json.error));
+            }
+            return Number(BigInt(json.result)) / 1000000;
+        };
+
+        const USDCE = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
+        const PUSD = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB";
+
+        const [usdce, pusd] = await Promise.all([
+            getBalance(USDCE, funderAddress),
+            getBalance(PUSD, funderAddress)
+        ]);
+
+        return res.json({
+            address: funderAddress,
+            usdce,
+            pusd,
+            balance: usdce + pusd
+        });
+    } catch (e) {
+        console.error(e);
+        return res.status(500).json({ error: 'Failed to fetch wallet balance: ' + e.message });
+    }
 });
 
 const SETTINGS_FILE_PATH = path.join(ENGINE_PATH, 'config/strategy-settings.json');

@@ -16,14 +16,15 @@ import {
   BookOpen,
   HelpCircle,
   ExternalLink,
-  RotateCcw
+  RotateCcw,
+  BarChart4
 } from 'lucide-react';
 
 const API_BASE = window.location.origin;
 
-const AVAILABLE_STRATEGIES = [
+const FALLBACK_STRATEGIES = [
   'simulation', 'late-entry', 'steady-scalp', 'iron-lock', 
-  'late-down', 'late-down-v2', 'certainty-sweeper', 'certainty-sweeper-mid', 'sweeper-adaptive', 'sweeper-adaptive-exclude-btc', 'sweeper-adaptive-xrp', 'sweeper-adaptive-eth', 'sweeper-adaptive-sol', 'sweeper-adaptive-doge', 'sweeper-adaptive-bnb', 'sure-win-sniper'
+  'late-down', 'late-down-v2', 'certainty-sweeper', 'certainty-sweeper-mid', 'sweeper-adaptive', 'sweeper-adaptive-exclude-btc', 'sweeper-adaptive-xrp', 'sweeper-adaptive-eth', 'sweeper-adaptive-sol', 'sweeper-adaptive-doge', 'sweeper-adaptive-bnb', 'sure-win-sniper', 'sure-win-sniper-v2'
 ];
 
 const AVAILABLE_TICKERS = ['btc', 'eth', 'xrp', 'sol', 'doge', 'bnb'];
@@ -86,6 +87,14 @@ const PARAM_METADATA: Record<string, Record<string, { label: string, step: strin
     maxEntryPrice: { label: 'Max Entry Price', step: '0.01', min: '0.01' },
     minLiquidity: { label: 'Min Liquidity ($)', step: '1', min: '1' },
     sharesToBuy: { label: 'Shares to Buy', step: '1', min: '1' }
+  },
+  'sure-win-sniper-v2': {
+    minGapBtc: { label: 'Min Gap ($)', step: '1', min: '1' },
+    maxEntryPrice: { label: 'Max Entry Price', step: '0.01', min: '0.01' },
+    minLiquidity: { label: 'Min Liquidity ($)', step: '1', min: '1' },
+    sharesToBuy: { label: 'Shares to Buy', step: '1', min: '1' },
+    atrMultiplier: { label: 'ATR Multiplier', step: '0.01', min: '0.01' },
+    maxAtr: { label: 'Max ATR ($)', step: '1', min: '1' }
   }
 };
 
@@ -108,6 +117,9 @@ export default function Dashboard() {
   const [strategySettings, setStrategySettings] = useState<any>(null);
   const [tickerValues, setTickerValues] = useState<any[]>([]);
   const [tickerUpdatedAt, setTickerUpdatedAt] = useState<number | null>(null);
+  const [availableStrategies, setAvailableStrategies] = useState<string[]>(FALLBACK_STRATEGIES);
+  const [analytics, setAnalytics] = useState<any>({ loading: true });
+  const [realWalletBalance, setRealWalletBalance] = useState<number | null>(null);
 
   useEffect(() => {
     const fetchSettings = async () => {
@@ -121,8 +133,43 @@ export default function Dashboard() {
         console.error("Failed to fetch settings", e);
       }
     };
+    const fetchStrategies = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/strategies`);
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data) && data.length > 0) {
+            setAvailableStrategies(data);
+          }
+        }
+      } catch (e) {
+        console.error("Failed to fetch strategies", e);
+      }
+    };
+    const fetchWalletBalance = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/wallet-balance`);
+        if (res.ok) {
+          const data = await res.json();
+          setRealWalletBalance(data.balance);
+        }
+      } catch (e) {
+        console.error("Failed to fetch wallet balance", e);
+      }
+    };
     fetchSettings();
+    fetchStrategies();
+    fetchWalletBalance();
   }, []);
+
+  useEffect(() => {
+    if (inputs.prod && realWalletBalance !== null) {
+      setInputs(prev => ({
+        ...prev,
+        balance: realWalletBalance.toFixed(2)
+      }));
+    }
+  }, [realWalletBalance, inputs.prod]);
 
   const handleSaveSettings = async (updatedSettings: any) => {
     try {
@@ -152,6 +199,27 @@ export default function Dashboard() {
     };
     setStrategySettings(updated);
   };
+
+  useEffect(() => {
+    let timer: any;
+    const fetchAnalytics = async () => {
+      try {
+        const windowParam = '7d';
+        const [pnl, hourly, skips, spread] = await Promise.all([
+          fetch(`${API_BASE}/api/analytics/pnl-by-strategy?window=${windowParam}&limit=8`).then(r => r.json()),
+          fetch(`${API_BASE}/api/analytics/hourly-performance?window=${windowParam}&limit=8`).then(r => r.json()),
+          fetch(`${API_BASE}/api/analytics/skip-reasons?window=${windowParam}&limit=8`).then(r => r.json()),
+          fetch(`${API_BASE}/api/analytics/orderbook-spread?window=24h&limit=8`).then(r => r.json())
+        ]);
+        setAnalytics({ loading: false, pnl, hourly, skips, spread, updatedAt: Date.now() });
+      } catch (e: any) {
+        setAnalytics({ loading: false, error: e?.message || 'Failed to load analytics' });
+      }
+    };
+    fetchAnalytics();
+    timer = setInterval(fetchAnalytics, 30000);
+    return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     let timer: any;
@@ -323,6 +391,13 @@ export default function Dashboard() {
 
   const simProcesses = runningProcesses.filter((proc) => proc.config?.prod !== true && proc.config?.prod !== 'true');
   const prodProcesses = runningProcesses.filter((proc) => proc.config?.prod === true || proc.config?.prod === 'true');
+  const questDbAvailable = [analytics.pnl, analytics.hourly, analytics.skips, analytics.spread].some((r: any) => r?.available);
+  const questDbError = [analytics.pnl, analytics.hourly, analytics.skips, analytics.spread].find((r: any) => r && r.available === false)?.error || analytics.error;
+
+  const renderAnalyticsList = (rows: any[], empty: string, render: (row: any, idx: number) => any) => {
+    if (!rows?.length) return <div className="text-[11px] text-slate-500 italic p-3 bg-black/30 rounded-xl border border-white/5">{empty}</div>;
+    return <div className="space-y-2">{rows.map(render)}</div>;
+  };
 
   const renderProcessCard = (proc: any) => {
     const cnf = proc.config || {};
@@ -470,7 +545,7 @@ export default function Dashboard() {
                   onChange={(e) => setInputs({...inputs, strategy: e.target.value})}
                   className="w-full bg-black/40 border border-white/5 rounded-xl px-4 py-3 text-white focus:outline-none appearance-none"
                 >
-                  {AVAILABLE_STRATEGIES.map(s => <option key={s} value={s} className="bg-slate-900">{s}</option>)}
+                  {availableStrategies.map(s => <option key={s} value={s} className="bg-slate-900">{s}</option>)}
                 </select>
               </div>
 
@@ -564,15 +639,25 @@ export default function Dashboard() {
                 { name: 'rounds', label: 'Rounds (0=Inf)', icon: <Clock /> }
               ].map((input) => (
                 <div key={input.name} className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2">
-                    {cloneElement(input.icon as ReactElement<any>, { className: "w-3 h-3" })} {input.label}
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest flex items-center justify-between">
+                    <span className="flex items-center gap-2">
+                      {cloneElement(input.icon as ReactElement<any>, { className: "w-3 h-3" })} {input.label}
+                    </span>
+                    {input.name === 'balance' && realWalletBalance !== null && (
+                      <span className="text-[9px] font-extrabold text-pink-400 normal-case tracking-normal">
+                        On-chain: {realWalletBalance.toFixed(2)} USDC
+                      </span>
+                    )}
                   </label>
                   <input 
                     type="number"
                     name={input.name}
                     value={(inputs as any)[input.name]}
+                    disabled={input.name === 'balance' && inputs.prod}
                     onChange={(e) => setInputs({...inputs, [e.target.name]: e.target.value})}
-                    className="w-full bg-black/40 border border-white/5 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-pink-500/50"
+                    className={`w-full bg-black/40 border border-white/5 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-pink-500/50 ${
+                      input.name === 'balance' && inputs.prod ? 'opacity-60 cursor-not-allowed bg-slate-900/40' : ''
+                    }`}
                   />
                 </div>
               ))}
@@ -580,24 +665,35 @@ export default function Dashboard() {
             </div>
 
             {/* STRATEGY TUNING CARD */}
-            {PARAM_METADATA[inputs.strategy] && strategySettings && (
+            {strategySettings && strategySettings[inputs.strategy] && (
               <div className="bg-slate-900/50 backdrop-blur-xl border border-white/5 p-6 rounded-3xl shadow-xl mt-6">
                 <h2 className="text-sm font-black uppercase tracking-widest text-white mb-4 flex items-center gap-3">
                   <Settings2 className="w-4 h-4 text-pink-500" />
                   Tuning: <span className="text-pink-500">{inputs.strategy}</span>
                 </h2>
                 <div className="space-y-4">
-                  {Object.entries(PARAM_METADATA[inputs.strategy] || {}).map(([key, meta]) => {
+                  {Object.keys(strategySettings[inputs.strategy] || {}).map((key) => {
                     const val = strategySettings[inputs.strategy]?.[key] ?? '';
+                    // Get static metadata if available, otherwise generate dynamically
+                    const staticMeta = PARAM_METADATA[inputs.strategy]?.[key];
+                    const label = staticMeta?.label ?? key
+                      .replace(/([A-Z])/g, ' $1')
+                      .replace(/^./, (str) => str.toUpperCase())
+                      .replace(/\bBtc\b/g, 'BTC')
+                      .replace(/\bAtr\b/g, 'ATR')
+                      .replace(/\bUsd\b/g, 'USD');
+                    const step = staticMeta?.step ?? (typeof val === 'number' && !Number.isInteger(val) ? '0.01' : '1');
+                    const min = staticMeta?.min ?? '0';
+
                     return (
                       <div key={key} className="space-y-1">
                         <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                          {meta.label}
+                          {label}
                         </label>
                         <input
                           type="number"
-                          step={meta.step}
-                          min={meta.min}
+                          step={step}
+                          min={min}
                           value={val}
                           onChange={(e) => handleParamChange(inputs.strategy, key, e.target.value)}
                           className="w-full bg-black/40 border border-white/5 rounded-xl px-4 py-2 text-white text-xs focus:outline-none focus:border-pink-500/50"
@@ -751,6 +847,59 @@ export default function Dashboard() {
               {!tickerValues.length && (
                 <div className="col-span-full p-4 bg-black/40 border border-white/5 rounded-2xl text-slate-500 text-xs italic">Ticker values are loading...</div>
               )}
+            </div>
+          </div>
+
+          {/* QUESTDB ANALYTICS */}
+          <div className="bg-slate-900/50 backdrop-blur-xl border border-purple-500/10 rounded-3xl p-6 shadow-xl">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-5">
+              <h2 className="text-xl font-bold flex items-center gap-3 text-white"><BarChart4 className="w-5 h-5 text-purple-400" /> QuestDB Analytics</h2>
+              <div className={`text-[10px] font-black uppercase tracking-widest ${questDbAvailable ? 'text-emerald-400' : 'text-amber-400'}`}>
+                {analytics.loading ? 'Loading' : questDbAvailable ? `Online · ${analytics.updatedAt ? new Date(analytics.updatedAt).toLocaleTimeString() : ''}` : 'Unavailable'}
+              </div>
+            </div>
+            {!questDbAvailable && !analytics.loading && (
+              <div className="mb-4 p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-[11px] text-amber-200">
+                QuestDB belum aktif atau belum punya tabel analytics. Endpoint tetap aman: {questDbError || 'no data'}
+              </div>
+            )}
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+              <div className="p-4 bg-black/30 border border-white/5 rounded-2xl">
+                <div className="text-xs font-black uppercase tracking-widest text-slate-300 mb-3">PnL by Strategy</div>
+                {renderAnalyticsList(analytics.pnl?.rows || [], 'No market_results data yet.', (row: any, idx: number) => (
+                  <div key={`${row.strategy}-${row.asset}-${idx}`} className="flex items-center justify-between gap-3 text-xs font-mono p-2 rounded-lg bg-black/30">
+                    <span className="text-slate-300 truncate">{row.strategy} · {row.asset}</span>
+                    <span className={`${Number(row.total_pnl || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'} font-black`}>{Number(row.total_pnl || 0) >= 0 ? '+' : ''}{Number(row.total_pnl || 0).toFixed(2)}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="p-4 bg-black/30 border border-white/5 rounded-2xl">
+                <div className="text-xs font-black uppercase tracking-widest text-slate-300 mb-3">Top Skip Reasons</div>
+                {renderAnalyticsList(analytics.skips?.rows || [], 'No strategy_decisions skip data yet.', (row: any, idx: number) => (
+                  <div key={`${row.strategy}-${row.reason}-${idx}`} className="flex items-center justify-between gap-3 text-xs font-mono p-2 rounded-lg bg-black/30">
+                    <span className="text-slate-300 truncate" title={`${row.strategy} · ${row.asset} · ${row.reason}`}>{row.reason || 'unknown'} · {row.asset}</span>
+                    <span className="text-purple-300 font-black">{row.count}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="p-4 bg-black/30 border border-white/5 rounded-2xl">
+                <div className="text-xs font-black uppercase tracking-widest text-slate-300 mb-3">Hourly Performance</div>
+                {renderAnalyticsList(analytics.hourly?.rows || [], 'No hourly market_results data yet.', (row: any, idx: number) => (
+                  <div key={`${row.strategy}-${row.asset}-${row.hour}-${idx}`} className="flex items-center justify-between gap-3 text-xs font-mono p-2 rounded-lg bg-black/30">
+                    <span className="text-slate-300 truncate">H{row.hour} · {row.strategy} · {row.asset}</span>
+                    <span className={`${Number(row.total_pnl || 0) >= 0 ? 'text-emerald-400' : 'text-red-400'} font-black`}>{Number(row.total_pnl || 0).toFixed(2)}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="p-4 bg-black/30 border border-white/5 rounded-2xl">
+                <div className="text-xs font-black uppercase tracking-widest text-slate-300 mb-3">Orderbook Spread</div>
+                {renderAnalyticsList(analytics.spread?.rows || [], 'No orderbook_snapshots data yet.', (row: any, idx: number) => (
+                  <div key={`${row.strategy}-${row.asset}-${row.side}-${idx}`} className="flex items-center justify-between gap-3 text-xs font-mono p-2 rounded-lg bg-black/30">
+                    <span className="text-slate-300 truncate">{row.asset} · {row.side}</span>
+                    <span className="text-cyan-300 font-black">{Number(row.avg_spread || 0).toFixed(4)}</span>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
 

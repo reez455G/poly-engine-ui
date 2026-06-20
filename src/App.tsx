@@ -3,19 +3,22 @@ import {
   Zap, 
   Settings2,
   History as HistoryIcon,
-  ExternalLink
+  ExternalLink,
+  BarChart4
 } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import History from './pages/History';
+import Backtest from './pages/Backtest';
 
 function Layout({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const isHistory = location.pathname === '/history';
+  const isBacktest = location.pathname === '/backtest';
 
   return (
     <div className="min-h-screen bg-[#020617] text-slate-200 p-4 md:p-8 lg:p-12 font-sans selection:bg-pink-500/30">
       <div className="fixed inset-0 overflow-hidden pointer-events-none z-0">
-        <div className={`absolute top-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full blur-[120px] transition-colors duration-1000 ${isHistory ? 'bg-purple-900/20' : 'bg-emerald-900/20'}`} />
+        <div className={`absolute top-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full blur-[120px] transition-colors duration-1000 ${isHistory ? 'bg-purple-900/20' : isBacktest ? 'bg-pink-950/20' : 'bg-emerald-900/20'}`} />
         <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-blue-900/10 rounded-full blur-[120px]" />
       </div>
 
@@ -31,9 +34,15 @@ function Layout({ children }: { children: React.ReactNode }) {
            <div className="flex bg-black/40 p-1 rounded-2xl border border-white/5">
               <Link 
                 to="/"
-                className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-bold transition-all ${!isHistory ? 'bg-white/10 text-white shadow-lg' : 'text-slate-500 hover:text-white hover:bg-white/5'}`}
+                className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-bold transition-all ${(!isHistory && !isBacktest) ? 'bg-white/10 text-white shadow-lg' : 'text-slate-500 hover:text-white hover:bg-white/5'}`}
               >
                 <Settings2 className="w-4 h-4" /> Dashboard
+              </Link>
+              <Link 
+                to="/backtest"
+                className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-bold transition-all ${isBacktest ? 'bg-white/10 text-white shadow-lg' : 'text-slate-500 hover:text-white hover:bg-white/5'}`}
+              >
+                <BarChart4 className="w-4 h-4" /> Backtest
               </Link>
               <Link 
                 to="/history"
@@ -68,14 +77,12 @@ function Layout({ children }: { children: React.ReactNode }) {
 }
 
 function App() {
-
-
-
   return (
     <BrowserRouter>
       <Layout>
         <Routes>
           <Route path="/" element={<Dashboard />} />
+          <Route path="/backtest" element={<Backtest />} />
           <Route path="/history" element={<History />} />
         </Routes>
       </Layout>

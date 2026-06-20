@@ -951,6 +951,150 @@ app.post('/api/run-diagnostic', async (req, res) => {
     });
 });
 
+app.post('/api/backtest', async (req, res) => {
+    const { strategy, asset, window, from, to } = req.body;
+    if (!strategy || !asset || !window || !from || !to) {
+        return res.status(400).json({ error: 'All parameters (strategy, asset, window, from, to) are required' });
+    }
+
+    const safeStrategy = strategy.replace(/[^a-zA-Z0-9_-]/g, '');
+    const safeAsset = asset.replace(/[^a-zA-Z0-9_-]/g, '');
+    const safeWindow = window.replace(/[^a-zA-Z0-9_-]/g, '');
+
+    const reportFilename = `docs/reports/BACKTEST_${safeStrategy}_${safeAsset}_${Date.now()}.md`;
+    const reportPath = path.join(ENGINE_PATH, reportFilename);
+
+    const args = [
+        'scripts/backtest-from-questdb.ts',
+        '--strategy', safeStrategy,
+        '--asset', safeAsset,
+        '--window', safeWindow,
+        '--from', from,
+        '--to', to,
+        '--out', reportFilename
+    ];
+
+    const child = spawn('/home/efsatu/.bun/bin/bun', args, {
+        cwd: ENGINE_PATH,
+        env: { ...process.env }
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.on('data', (data) => { stdout += data.toString(); });
+    child.stderr.on('data', (data) => { stderr += data.toString(); });
+
+    child.on('close', (code) => {
+        if (code !== 0) {
+            console.error(`Backtest run failed. code: ${code}, stderr: ${stderr}`);
+            return res.status(500).json({ error: 'Backtest runner failed', stderr, stdout });
+        }
+
+        try {
+            if (!fs.existsSync(reportPath)) {
+                return res.status(500).json({ error: 'Report file was not generated', stdout, stderr });
+            }
+
+            const report = fs.readFileSync(reportPath, 'utf8');
+
+            try { fs.unlinkSync(reportPath); } catch (e) {}
+
+            const parseMetric = (name) => {
+                const regex = new RegExp(`-\\s+\\*\\*${name}\\*\\*:\\s*([^\\n]+)`, 'i');
+                const match = report.match(regex);
+                return match ? match[1].trim() : 'n/a';
+            };
+
+            const pnl = parseMetric('Strict PnL');
+            const winRateStr = parseMetric('Winrate');
+            const totalMarkets = parseMetric('Total Markets Scanned');
+            const candidates = parseMetric('Candidates Placed');
+            const strictFills = parseMetric('Strict Fills');
+            const resolvedFills = parseMetric('Resolved Strict Fills');
+            const expectancy = parseMetric('Expectancy');
+            const profitFactor = parseMetric('Profit Factor');
+            const maxDrawdown = parseMetric('Max Drawdown');
+            const missedWinners = parseMetric('Missed Winners');
+            const falseEntries = parseMetric('False Entries');
+            const averageSlippage = parseMetric('Average Slippage');
+
+            let wins = '0';
+            let losses = '0';
+            const winratePctMatch = winRateStr.match(/^([\d.]+%)/);
+            const winratePct = winratePctMatch ? winratePctMatch[1] : '0.0%';
+            const winsLossesMatch = winRateStr.match(/Wins:\s*(\d+)\s*\/\s*Losses:\s*(\d+)/i);
+            if (winsLossesMatch) {
+                wins = winsLossesMatch[1];
+                losses = winsLossesMatch[2];
+            }
+
+            const skipReasonRows = [];
+            const skipTableMatch = report.match(/## Missed Winners Skip Reason Analysis\r?\n\|[^\r\n]+\r?\n\|[^\r\n]+\r?\n([\s\S]*?)(?=\r?\n##|\r?\n\r?\n##|\r?\n$)/);
+            if (skipTableMatch && skipTableMatch[1]) {
+                const lines = skipTableMatch[1].split(/\r?\n/).filter(Boolean);
+                for (const line of lines) {
+                    if (line.includes('| ---') || line.includes('Skip Reason Filter')) continue;
+                    const parts = line.split('|').map(p => p.trim()).filter(p => p !== '');
+                    if (parts.length >= 2) {
+                        skipReasonRows.push({ reason: parts[0], count: parts[1] });
+                    }
+                }
+            }
+
+            const candidatesRows = [];
+            const candTableMatch = report.match(/## Recent Candidates Replay Details\r?\n\|[^\r\n]+\r?\n\|[^\r\n]+\r?\n([\s\S]*?)(?=\r?\n##|\r?\n\r?\n##|\r?\n$)/);
+            if (candTableMatch && candTableMatch[1]) {
+                const lines = candTableMatch[1].split(/\r?\n/).filter(Boolean);
+                for (const line of lines) {
+                    if (line.includes('| ---') || line.includes('Entry Time')) continue;
+                    const parts = line.split('|').map(p => p.trim()).filter(p => p !== '');
+                    if (parts.length >= 12) {
+                        candidatesRows.push({
+                            time: parts[0],
+                            slug: parts[1],
+                            side: parts[2],
+                            ladder: parts[3],
+                            filled: parts[4],
+                            status: parts[5],
+                            outcome: parts[6],
+                            pnl: parts[7],
+                            bid: parts[8],
+                            gap: parts[9],
+                            remain: parts[10],
+                            score: parts[11]
+                        });
+                    }
+                }
+            }
+
+            res.json({
+                pnl,
+                winRate: winratePct,
+                wins,
+                losses,
+                totalMarkets,
+                candidates,
+                strictFills,
+                resolvedFills,
+                expectancy,
+                profitFactor,
+                maxDrawdown,
+                missedWinners,
+                falseEntries,
+                averageSlippage,
+                skipReasons: skipReasonRows,
+                recentCandidates: candidatesRows,
+                rawReport: report
+            });
+
+        } catch (e) {
+            console.error('Error parsing backtest report:', e);
+            res.status(500).json({ error: 'Failed to parse backtest report', details: e.message });
+        }
+    });
+});
+
 app.get('/api/changelog', (req, res) => {
     const changelogPath = path.join(__dirname, 'strategy-changelog.json');
     try {

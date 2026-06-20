@@ -951,6 +951,43 @@ app.post('/api/run-diagnostic', async (req, res) => {
     });
 });
 
+app.get('/api/trader-analysis/report', (req, res) => {
+    const jsonPath = path.join(ENGINE_PATH, 'docs/reports/TRADER_WALLET_ANALYSIS_latest.json');
+    const mdPath = path.join(ENGINE_PATH, 'docs/reports/TRADER_WALLET_ANALYSIS_latest.md');
+    try {
+        const report = fs.existsSync(jsonPath) ? JSON.parse(fs.readFileSync(jsonPath, 'utf8')) : null;
+        const markdown = fs.existsSync(mdPath) ? fs.readFileSync(mdPath, 'utf8') : '';
+        res.json({ available: !!report, report, markdown, updatedAt: report?.generatedAt || null });
+    } catch (e) {
+        res.status(500).json({ available: false, error: e.message });
+    }
+});
+
+function pidStatus(pidFile) {
+    try {
+        if (!fs.existsSync(pidFile)) return 'not_found';
+        const pid = Number(fs.readFileSync(pidFile, 'utf8').trim());
+        if (!Number.isFinite(pid)) return 'invalid_pid';
+        try {
+            process.kill(pid, 0);
+            return 'online';
+        } catch {
+            return 'stopped';
+        }
+    } catch {
+        return 'unknown';
+    }
+}
+
+app.get('/api/trader-analysis/status', async (req, res) => {
+    const statuses = cachedPm2Statuses || {};
+    res.json({
+        collector: statuses['trader-wallet-collector'] || pidStatus(path.join(ENGINE_PATH, 'state/trader-wallet-collector.pid')),
+        heartbeat: statuses['trader-analysis-heartbeat'] || pidStatus(path.join(ENGINE_PATH, 'state/trader-analysis-heartbeat.pid')),
+        updatedAt: Date.now()
+    });
+});
+
 app.post('/api/backtest', async (req, res) => {
     const { strategy, asset, window, from, to } = req.body;
     if (!strategy || !asset || !window || !from || !to) {

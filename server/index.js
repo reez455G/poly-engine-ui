@@ -495,6 +495,36 @@ app.get('/api/analytics/skip-reasons', async (req, res) => {
     return questDbQuery(res, sql);
 });
 
+app.get('/api/analytics/agy-market-analyses', async (req, res) => {
+    const limit = parseAnalyticsLimit(req.query.limit, 100, 1000);
+    const sql = `
+        SELECT
+          timestamp,
+          slug,
+          asset,
+          result_side,
+          binance_pred_1_15s,
+          binance_pred_15_45s,
+          binance_pred_45_60s,
+          binance_pred_1m_5m,
+          chainlink_pred_1_15s,
+          chainlink_pred_15_45s,
+          chainlink_pred_45_60s,
+          chainlink_pred_1m_5m,
+          is_correct_1_15s,
+          is_correct_15_45s,
+          is_correct_45_60s,
+          is_correct_1m_5m,
+          open_price,
+          binance_correct_count,
+          chainlink_correct_count,
+          analysis_text
+        FROM agy_market_analyses
+        ORDER BY timestamp DESC
+        LIMIT ${limit}`;
+    return questDbQuery(res, sql);
+});
+
 async function fetchJsonWithTimeout(url, timeoutMs = 4000) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);

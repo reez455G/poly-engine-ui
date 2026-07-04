@@ -237,7 +237,7 @@ async function sendHubNotification(title, message, type = 'info') {
 }
 
 app.post('/api/start', async (req, res) => {
-    const { balance, maxLoss, maxProfit, tradeAmount, strategy, tickers, rounds, tickerSources, hourlyProfitTarget, prod } = req.body;
+    const { balance, maxLoss, maxProfit, tradeAmount, strategy, tickers, rounds, tickerSources, hourlyProfitTarget, prod, extraEnv } = req.body;
     if (!tickers || tickers.length === 0) return res.status(400).json({ error: 'No tickers' });
 
     const configs = await getPersistedConfigs();
@@ -268,8 +268,9 @@ app.post('/api/start', async (req, res) => {
             MAX_SESSION_PROFIT: maxProfit, 
             HOURLY_PROFIT_TARGET: hourlyProfitTarget || '0', 
             WALLET_BALANCE: balance,
-            UI_BALANCE: balance, 
-            UI_TRADE_AMOUNT: tradeAmount 
+            UI_BALANCE: balance,
+            UI_TRADE_AMOUNT: tradeAmount,
+            ...(extraEnv && typeof extraEnv === 'object' ? extraEnv : {})
         };
         if (prod === true || prod === 'true') {
             env.FORCE_PROD = "true";
@@ -337,7 +338,8 @@ app.post('/api/restart', async (req, res) => {
         HOURLY_PROFIT_TARGET: config.hourlyProfitTarget || '0',
         WALLET_BALANCE: config.balance,
         UI_BALANCE: config.balance,
-        UI_TRADE_AMOUNT: config.tradeAmount
+        UI_TRADE_AMOUNT: config.tradeAmount,
+        ...(config.extraEnv && typeof config.extraEnv === 'object' ? config.extraEnv : {})
     };
     if (config.prod === true || config.prod === 'true') {
         env.FORCE_PROD = "true";

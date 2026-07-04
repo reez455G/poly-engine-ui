@@ -31,7 +31,13 @@ export default function Backtest() {
     asset: 'btc',
     window: '5m',
     from: '',
-    to: ''
+    to: '',
+    initialBalance: '100',
+    tradeSize: '5',
+    sizingMode: 'fixed',
+    maxSessionLoss: '0',
+    maxSessionProfit: '0',
+    compound: false
   });
   
   const [isRunning, setIsRunning] = useState(false);
@@ -90,7 +96,7 @@ export default function Backtest() {
       const fromIso = new Date(inputs.from).toISOString();
       const toIso = new Date(inputs.to).toISOString();
 
-      const res = await fetch(`${API_BASE}/api/backtest`, {
+      const res = await fetch(`${API_BASE}/api/backtest/questdb`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -98,7 +104,13 @@ export default function Backtest() {
           asset: inputs.asset,
           window: inputs.window,
           from: fromIso,
-          to: toIso
+          to: toIso,
+          initialBalance: inputs.initialBalance,
+          tradeSize: inputs.tradeSize,
+          sizingMode: inputs.sizingMode,
+          maxSessionLoss: inputs.maxSessionLoss,
+          maxSessionProfit: inputs.maxSessionProfit,
+          compound: inputs.compound
         })
       });
 
@@ -108,6 +120,9 @@ export default function Backtest() {
       }
 
       const data = await res.json();
+      if (data && data.available === false) {
+        throw new Error(data.error || 'QuestDB backtest data unavailable');
+      }
       setResults(data);
     } catch (err: any) {
       console.error("Backtest execution error:", err);
@@ -179,6 +194,38 @@ export default function Backtest() {
               </select>
             </div>
 
+            <div className="pt-3 border-t border-white/5 space-y-3">
+              <div className="text-[10px] font-black text-pink-400 uppercase tracking-widest">Capital Simulation</div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <label className="text-[9px] font-bold text-slate-500 uppercase">Initial Balance</label>
+                  <input type="number" value={inputs.initialBalance} onChange={(e) => setInputs({...inputs, initialBalance: e.target.value})} className="w-full bg-black/40 border border-white/5 rounded-xl px-3 py-2 text-white text-xs" />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[9px] font-bold text-slate-500 uppercase">Trade Size</label>
+                  <input type="number" value={inputs.tradeSize} onChange={(e) => setInputs({...inputs, tradeSize: e.target.value})} className="w-full bg-black/40 border border-white/5 rounded-xl px-3 py-2 text-white text-xs" />
+                </div>
+              </div>
+              <select value={inputs.sizingMode} onChange={(e) => setInputs({...inputs, sizingMode: e.target.value})} className="w-full bg-black/40 border border-white/5 rounded-xl px-3 py-2 text-white text-xs">
+                <option value="fixed" className="bg-slate-900">Fixed USDC size</option>
+                <option value="percent" className="bg-slate-900">Percent of balance</option>
+                <option value="actual" className="bg-slate-900">Actual historical size</option>
+              </select>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <label className="text-[9px] font-bold text-slate-500 uppercase">Max Loss (0=off)</label>
+                  <input type="number" value={inputs.maxSessionLoss} onChange={(e) => setInputs({...inputs, maxSessionLoss: e.target.value})} className="w-full bg-black/40 border border-white/5 rounded-xl px-3 py-2 text-white text-xs" />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[9px] font-bold text-slate-500 uppercase">Max Profit (0=off)</label>
+                  <input type="number" value={inputs.maxSessionProfit} onChange={(e) => setInputs({...inputs, maxSessionProfit: e.target.value})} className="w-full bg-black/40 border border-white/5 rounded-xl px-3 py-2 text-white text-xs" />
+                </div>
+              </div>
+              <label className="flex items-center gap-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                <input type="checkbox" checked={inputs.compound} onChange={(e) => setInputs({...inputs, compound: e.target.checked})} /> Compound sizing
+              </label>
+            </div>
+
             <div className="space-y-2">
               <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block flex items-center gap-1">
                 <Calendar className="w-3 h-3 text-pink-500" /> From
@@ -223,8 +270,8 @@ export default function Backtest() {
           {/* Quick Notice */}
           <div className="p-4 bg-slate-900/40 border border-white/5 rounded-2xl text-[11px] text-slate-400 space-y-2 leading-relaxed">
             <span className="font-extrabold text-slate-200 flex items-center gap-1"><HelpCircle className="w-3 h-3 text-cyan-400" /> Backtesting Notice</span>
-            <p>Backtests run completely offline inside the server controller against historical snapshots stored in QuestDB.</p>
-            <p>Make sure the QuestDB container is running and has the analytics tables backfilled.</p>
+            <p>Backtest menu ini memakai QuestDB historical telemetry: market_results, strategy_decisions, orders, order_intents, orderbook_snapshots, dan config snapshots.</p>
+            <p>Ini aman untuk analisa/tuning offline dan tidak menyentuh engine trading yang sedang berjalan.</p>
           </div>
         </section>
 
@@ -271,10 +318,11 @@ export default function Backtest() {
               {/* Top Summary Cards */}
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                 <div className="p-5 bg-black/40 border border-white/5 rounded-2xl flex flex-col justify-between">
-                  <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-1.5"><Activity className="w-3 h-3 text-pink-500" /> Strict P&L</span>
+                  <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-1.5"><Activity className="w-3 h-3 text-pink-500" /> Simulated P&L</span>
                   <span className={`text-2xl font-black mt-2 ${isPositive(results.pnl) ? 'text-emerald-400' : 'text-red-400'}`}>
                     {results.pnl}
                   </span>
+                  <span className="text-[10px] font-mono text-slate-500 mt-1">Hist: {results.historicalPnl || 'n/a'}</span>
                 </div>
 
                 <div className="p-5 bg-black/40 border border-white/5 rounded-2xl flex flex-col justify-between">
@@ -298,7 +346,7 @@ export default function Backtest() {
                   <span className="text-2xl font-black mt-2 text-white">
                     {results.expectancy}
                   </span>
-                  <span className="text-[10px] font-mono text-slate-500 mt-1">PF: {results.profitFactor}</span>
+                  <span className="text-[10px] font-mono text-slate-500 mt-1">End: {results.endingBalance || 'n/a'} · PF: {results.profitFactor}</span>
                 </div>
               </div>
 
@@ -309,18 +357,27 @@ export default function Backtest() {
                   <div className="text-base font-bold text-red-400 mt-1">{results.maxDrawdown}</div>
                 </div>
                 <div className="p-4 bg-slate-900/30 border border-white/5 rounded-xl text-center">
-                  <div className="text-[9px] text-slate-500 uppercase font-black tracking-wider">Strict Fills</div>
-                  <div className="text-base font-bold text-slate-200 mt-1">{results.strictFills} / {results.resolvedFills}</div>
+                  <div className="text-[9px] text-slate-500 uppercase font-black tracking-wider">Order Fills</div>
+                  <div className="text-base font-bold text-slate-200 mt-1">{results.strictFills} / {results.orderStats?.total_orders ?? results.resolvedFills}</div>
+                  <div className="text-[9px] text-cyan-300 mt-1">Fill Rate: {results.orderFillRate || 'n/a'}</div>
                 </div>
                 <div className="p-4 bg-slate-900/30 border border-white/5 rounded-xl text-center">
-                  <div className="text-[9px] text-slate-500 uppercase font-black tracking-wider">Missed Winners</div>
+                  <div className="text-[9px] text-slate-500 uppercase font-black tracking-wider">Skip Decisions</div>
                   <div className="text-base font-bold text-amber-300 mt-1">{results.missedWinners}</div>
+                  <div className="text-[9px] text-slate-500 mt-1">Grouped by reason below</div>
                 </div>
                 <div className="p-4 bg-slate-900/30 border border-white/5 rounded-xl text-center">
-                  <div className="text-[9px] text-slate-500 uppercase font-black tracking-wider">False Entries</div>
-                  <div className="text-base font-bold text-red-300 mt-1">{results.falseEntries}</div>
+                  <div className="text-[9px] text-slate-500 uppercase font-black tracking-wider">Avg Spread</div>
+                  <div className="text-base font-bold text-purple-300 mt-1">{results.averageSpread || 'n/a'}</div>
+                  <div className="text-[9px] text-slate-500 mt-1">BidLiq {results.avgBidLiquidity || 'n/a'} · AskLiq {results.avgAskLiquidity || 'n/a'}</div>
                 </div>
               </div>
+
+              {results.mode && (
+                <div className="p-4 bg-cyan-500/10 border border-cyan-500/20 rounded-2xl text-[11px] text-cyan-100">
+                  Mode: <span className="font-mono font-bold">{results.mode}</span>. Capital sim: <span className="font-mono">{results.capitalSim?.sizingMode} size={results.capitalSim?.tradeSize} start={results.capitalSim?.initialBalance} end={results.capitalSim?.endingBalance?.toFixed?.(2)}</span>. Data diambil langsung dari QuestDB, aman untuk tuning tanpa menjalankan order baru.
+                </div>
+              )}
 
               {/* Missed Winners Skip Reason Analysis */}
               <div className="bg-slate-900/50 backdrop-blur-xl border border-white/5 rounded-3xl p-6 shadow-xl">
@@ -352,6 +409,43 @@ export default function Backtest() {
                   </table>
                 </div>
               </div>
+
+              {/* Decision Breakdown */}
+              <div className="bg-slate-900/50 backdrop-blur-xl border border-white/5 rounded-3xl p-6 shadow-xl">
+                <h3 className="text-base font-bold text-white mb-4 flex items-center gap-2">
+                  <BarChart4 className="w-4 h-4 text-purple-400" /> Decision Breakdown
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                  {(results.decisionBreakdown || []).map((row: any, i: number) => (
+                    <div key={i} className="p-3 rounded-xl bg-black/30 border border-white/5 flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-xs font-black uppercase text-white">{row.decision}</div>
+                        <div className="text-[9px] text-slate-500 font-mono">avgGap={row.avg_gap ?? 'n/a'} · conf={row.avg_confidence ?? 'n/a'}</div>
+                      </div>
+                      <div className="text-lg font-black text-purple-300">{row.count}</div>
+                    </div>
+                  ))}
+                  {(!results.decisionBreakdown || results.decisionBreakdown.length === 0) && (
+                    <div className="text-xs text-slate-500 italic">No strategy_decisions rows for this range.</div>
+                  )}
+                </div>
+              </div>
+
+              {results.configSnapshot && Object.keys(results.configSnapshot).length > 0 && (
+                <div className="bg-slate-900/50 backdrop-blur-xl border border-white/5 rounded-3xl p-6 shadow-xl">
+                  <h3 className="text-base font-bold text-white mb-4 flex items-center gap-2">
+                    <Layers className="w-4 h-4 text-pink-400" /> Latest Strategy Config Snapshot
+                  </h3>
+                  <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-2 text-[10px] font-mono">
+                    {Object.entries(results.configSnapshot).slice(0, 32).map(([key, value]: any) => (
+                      <div key={key} className="p-2 bg-black/30 border border-white/5 rounded-lg min-w-0">
+                        <div className="text-slate-500 truncate" title={key}>{key}</div>
+                        <div className="text-slate-200 font-bold truncate" title={String(value)}>{String(value)}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Recent Candidates Replay Details */}
               <div className="bg-slate-900/50 backdrop-blur-xl border border-white/5 rounded-3xl p-6 shadow-xl">

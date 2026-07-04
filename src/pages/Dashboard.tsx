@@ -798,10 +798,11 @@ export default function Dashboard() {
                   <div className="text-xl font-black text-purple-400">{activeStats?.prod?.trades || 0}</div>
                 </div>
                 <div className="p-3 bg-black/30 rounded-xl border border-white/5">
-                  <div className="text-[8px] font-black text-slate-500 uppercase tracking-widest mb-1 flex items-center gap-1"><Wallet className="w-2.5 h-2.5" /> Live Balance</div>
+                  <div className="text-[8px] font-black text-slate-500 uppercase tracking-widest mb-1 flex items-center gap-1"><Wallet className="w-2.5 h-2.5" /> On-chain Balance</div>
                   <div className="text-xl font-black text-white">
-                    {((activeStats?.prod?.allocatedBalance || 0) + (activeStats?.prod?.pnl || 0)).toFixed(2)} USDC
+                    {(realWalletBalance ?? activeStats?.prod?.allocatedBalance ?? 0).toFixed(2)} USDC
                   </div>
+                  <div className="text-[9px] text-slate-600 mt-1">Session P&L is shown separately</div>
                 </div>
               </div>
             </div>

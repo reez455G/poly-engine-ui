@@ -74,6 +74,33 @@ function pm2Delete(processId) {
     });
 }
 
+function getStrategySpecificEngineEnv(strategy) {
+    if (strategy === 'probabilistic-edge-btc-5m-c-no') {
+        return {
+            MARKET_WINDOW: '5m',
+            ENABLE_CNO_SIM: 'true',
+            CNO_EDGE_THRESHOLD: '0.00',
+            CNO_MIN_DOWN_ASK: '0.85',
+            CNO_MAX_ENTRY_REMAINING_SEC: '60'
+        };
+    }
+    if (strategy === 'probabilistic-edge-btc-5m-b-yes') {
+        return {
+            MARKET_WINDOW: '5m',
+            ENABLE_BYES_SIM: 'true',
+            BYES_EDGE_THRESHOLD: '0.05',
+            BYES_MAX_ENTRY_REMAINING_SEC: '60'
+        };
+    }
+    if (strategy === 'probabilistic-edge-btc-5m') {
+        return {
+            MARKET_WINDOW: '5m',
+            PROB_EDGE_A_ONLY_GATE: 'false'
+        };
+    }
+    return {};
+}
+
 function getPm2Statuses() {
     return new Promise((resolve) => {
         pm2.list((err, list) => {
@@ -270,7 +297,10 @@ app.post('/api/start', async (req, res) => {
             WALLET_BALANCE: balance,
             UI_BALANCE: balance,
             UI_TRADE_AMOUNT: tradeAmount,
-            ...(extraEnv && typeof extraEnv === 'object' ? extraEnv : {})
+            ...(extraEnv && typeof extraEnv === 'object' ? extraEnv : {}),
+            ENABLE_RESEARCH_TRADING: 'true',
+            ALLOW_RESEARCH_ARTIFACT_TRADING: 'true',
+            ...getStrategySpecificEngineEnv(strategy)
         };
         if (prod === true || prod === 'true') {
             env.FORCE_PROD = "true";
@@ -339,7 +369,10 @@ app.post('/api/restart', async (req, res) => {
         WALLET_BALANCE: config.balance,
         UI_BALANCE: config.balance,
         UI_TRADE_AMOUNT: config.tradeAmount,
-        ...(config.extraEnv && typeof config.extraEnv === 'object' ? config.extraEnv : {})
+        ...(config.extraEnv && typeof config.extraEnv === 'object' ? config.extraEnv : {}),
+        ENABLE_RESEARCH_TRADING: 'true',
+        ALLOW_RESEARCH_ARTIFACT_TRADING: 'true',
+        ...getStrategySpecificEngineEnv(config.strategy)
     };
     if (config.prod === true || config.prod === 'true') {
         env.FORCE_PROD = "true";
@@ -525,6 +558,413 @@ app.get('/api/analytics/agy-market-analyses', async (req, res) => {
         ORDER BY timestamp DESC
         LIMIT ${limit}`;
     return questDbQuery(res, sql);
+});
+
+function safeIsoDate(value) {
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toISOString();
+}
+
+function qdbLiteral(value) {
+    return String(value).replace(/'/g, "''");
+}
+
+function num(value, fallback = 0) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+}
+
+function fmtUsd(value) {
+    const n = num(value);
+    return `${n >= 0 ? '+' : ''}${n.toFixed(4)} USDC`;
+}
+
+function fmtPct(value) {
+    return `${num(value).toFixed(2)}%`;
+}
+
+function computeEquityStats(rows) {
+    let equity = 0;
+    let peak = 0;
+    let maxDrawdown = 0;
+    const equityCurve = [];
+    for (const row of rows) {
+        equity += num(row.pnl);
+        peak = Math.max(peak, equity);
+        maxDrawdown = Math.min(maxDrawdown, equity - peak);
+        equityCurve.push({ timestamp: row.timestamp, slug: row.slug, pnl: num(row.pnl), equity: Number(equity.toFixed(4)) });
+    }
+    return { equity, maxDrawdown, equityCurve };
+}
+
+function simulateCapitalBacktest(markets, buyOrders, opts) {
+    const costBySlug = new Map();
+    for (const row of buyOrders) costBySlug.set(row.slug, Math.max(0, num(row.buy_cost)));
+
+    let balance = Math.max(0, opts.initialBalance);
+    const startBalance = balance;
+    let peak = balance;
+    let maxDrawdown = 0;
+    let simulatedPnl = 0;
+    let tradesTaken = 0;
+    let skippedInsufficientBalance = 0;
+    let stoppedReason = null;
+    const curve = [];
+
+    for (const row of markets) {
+        if (stoppedReason) break;
+        const actualPnl = num(row.pnl);
+        const actualCost = costBySlug.get(row.slug) || Math.max(Math.abs(actualPnl), opts.tradeSize || 1);
+        let stake = opts.tradeSize;
+        if (opts.sizingMode === 'percent') stake = balance * (opts.tradeSize / 100);
+        if (opts.sizingMode === 'actual') stake = actualCost;
+        if (opts.compound && opts.sizingMode === 'fixed') stake = Math.min(opts.tradeSize, balance);
+        stake = Math.max(0, stake);
+
+        if (stake <= 0 || balance < stake) {
+            skippedInsufficientBalance++;
+            curve.push({ timestamp: row.timestamp, slug: row.slug, pnl: 0, balance: Number(balance.toFixed(4)), skipped: true });
+            continue;
+        }
+
+        const scaledPnl = actualCost > 0 ? actualPnl * (stake / actualCost) : actualPnl;
+        balance += scaledPnl;
+        simulatedPnl += scaledPnl;
+        tradesTaken++;
+        peak = Math.max(peak, balance);
+        maxDrawdown = Math.min(maxDrawdown, balance - peak);
+        curve.push({ timestamp: row.timestamp, slug: row.slug, pnl: Number(scaledPnl.toFixed(4)), balance: Number(balance.toFixed(4)), skipped: false });
+
+        if (opts.maxSessionLoss > 0 && startBalance - balance >= opts.maxSessionLoss) stoppedReason = 'max-session-loss';
+        if (opts.maxSessionProfit > 0 && balance - startBalance >= opts.maxSessionProfit) stoppedReason = 'max-session-profit';
+    }
+
+    return {
+        initialBalance: startBalance,
+        endingBalance: balance,
+        simulatedPnl,
+        maxDrawdown,
+        tradesTaken,
+        skippedInsufficientBalance,
+        stoppedReason,
+        sizingMode: opts.sizingMode,
+        tradeSize: opts.tradeSize,
+        compound: !!opts.compound,
+        equityCurve: curve.slice(-300),
+    };
+}
+
+function buildBacktestReport({ params, summary, decisions, skipReasons, orderStats, spreadStats, configs, recentCandidates, equityStats }) {
+    const lines = [];
+    lines.push(`# QuestDB Backtest Summary`);
+    lines.push(``);
+    lines.push(`- **Strategy**: ${params.strategy}`);
+    lines.push(`- **Asset**: ${params.asset}`);
+    lines.push(`- **Window**: ${params.window}`);
+    lines.push(`- **From**: ${params.from}`);
+    lines.push(`- **To**: ${params.to}`);
+    lines.push(``);
+    lines.push(`## Metrics`);
+    lines.push(`- **Strict PnL**: ${fmtUsd(summary.total_pnl)}`);
+    lines.push(`- **Winrate**: ${fmtPct(summary.win_rate)} (Wins: ${summary.wins} / Losses: ${summary.losses})`);
+    lines.push(`- **Total Markets Scanned**: ${summary.total_markets}`);
+    lines.push(`- **Candidates Placed**: ${summary.entries}`);
+    lines.push(`- **Strict Fills**: ${orderStats.filled_orders} / ${orderStats.total_orders}`);
+    lines.push(`- **Resolved Strict Fills**: ${summary.non_zero_markets}`);
+    lines.push(`- **Expectancy**: ${fmtUsd(summary.expectancy)}`);
+    lines.push(`- **Profit Factor**: ${summary.profit_factor}`);
+    lines.push(`- **Max Drawdown**: ${fmtUsd(equityStats.maxDrawdown)}`);
+    lines.push(`- **Missed Winners**: ${summary.skips}`);
+    lines.push(`- **False Entries**: ${summary.losses}`);
+    lines.push(`- **Average Slippage**: n/a`);
+    lines.push(`- **Order Fill Rate**: ${fmtPct(orderStats.fill_rate)}`);
+    lines.push(`- **Average Spread**: ${spreadStats.avg_spread === null ? 'n/a' : Number(spreadStats.avg_spread).toFixed(4)}`);
+    lines.push(``);
+    lines.push(`## Decision Breakdown`);
+    lines.push(`| Decision | Count | Avg Gap | Avg Confidence |`);
+    lines.push(`|---|---:|---:|---:|`);
+    for (const row of decisions) lines.push(`| ${row.decision} | ${row.count} | ${row.avg_gap ?? 'n/a'} | ${row.avg_confidence ?? 'n/a'} |`);
+    lines.push(``);
+    lines.push(`## Missed Winners Skip Reason Analysis`);
+    lines.push(`| Skip Reason Filter | Count |`);
+    lines.push(`|---|---:|`);
+    for (const row of skipReasons) lines.push(`| ${row.reason} | ${row.count} |`);
+    lines.push(``);
+    lines.push(`## Recent Candidates Replay Details`);
+    lines.push(`| Entry Time | Slug | Side | Ladder | Filled | Status | Outcome | PnL | Bid | Gap | Sec | Score |`);
+    lines.push(`|---|---|---|---|---:|---|---|---:|---:|---:|---:|---:|`);
+    for (const row of recentCandidates) lines.push(`| ${row.time} | ${row.slug} | ${row.side} | ${row.ladder} | ${row.filled} | ${row.status} | ${row.outcome} | ${row.pnl} | ${row.bid} | ${row.gap} | ${row.remain} | ${row.score} |`);
+    lines.push(``);
+    lines.push(`## Latest Config Snapshot`);
+    lines.push('```json');
+    lines.push(JSON.stringify(configs, null, 2));
+    lines.push('```');
+    return lines.join('\n');
+}
+
+app.post('/api/backtest/questdb', async (req, res) => {
+    const { strategy, asset, window, from, to, initialBalance, tradeSize, sizingMode, maxSessionLoss, maxSessionProfit, compound } = req.body || {};
+    if (!strategy || !asset || !window || !from || !to) {
+        return res.status(400).json({ available: false, error: 'All parameters (strategy, asset, window, from, to) are required' });
+    }
+
+    const safeStrategy = String(strategy).replace(/[^a-zA-Z0-9_-]/g, '');
+    const safeAsset = String(asset).toLowerCase().replace(/[^a-z0-9_-]/g, '');
+    const safeWindow = String(window).replace(/[^a-zA-Z0-9_-]/g, '');
+    const fromIso = safeIsoDate(from);
+    const toIso = safeIsoDate(to);
+    if (!fromIso || !toIso) return res.status(400).json({ available: false, error: 'Invalid from/to datetime' });
+
+    const where = `timestamp BETWEEN '${qdbLiteral(fromIso)}' AND '${qdbLiteral(toIso)}' AND strategy = '${qdbLiteral(safeStrategy)}' AND asset = '${qdbLiteral(safeAsset)}' AND slug LIKE '%-${qdbLiteral(safeWindow)}-%'`;
+
+    try {
+        const pool = getQuestDbPool();
+        const [summaryRes, equityRes, buyOrdersRes, decisionRes, skipRes, orderRes, spreadRes, configRes, decisionCandidateRes, candidateResultRes, candidateOrderRes, candidateIntentRes] = await Promise.all([
+            pool.query(`
+                SELECT
+                  count() AS total_markets,
+                  sum(pnl) AS total_pnl,
+                  avg(pnl) AS expectancy,
+                  sum(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) AS wins,
+                  sum(CASE WHEN pnl < 0 THEN 1 ELSE 0 END) AS losses,
+                  sum(CASE WHEN pnl != 0 THEN 1 ELSE 0 END) AS non_zero_markets,
+                  sum(CASE WHEN pnl > 0 THEN pnl ELSE 0 END) AS gross_profit,
+                  -sum(CASE WHEN pnl < 0 THEN pnl ELSE 0 END) AS gross_loss
+                FROM market_results
+                WHERE ${where}`),
+            pool.query(`SELECT timestamp, slug, pnl FROM market_results WHERE ${where} ORDER BY timestamp`),
+            pool.query(`
+                SELECT slug, sum(price * shares) AS buy_cost, sum(shares) AS buy_shares
+                FROM orders
+                WHERE ${where} AND action = 'buy' AND status = 'filled'
+                GROUP BY slug`),
+            pool.query(`
+                SELECT decision, count() AS count, avg(gap) AS avg_gap, avg(confidence) AS avg_confidence
+                FROM strategy_decisions
+                WHERE ${where}
+                GROUP BY decision
+                ORDER BY count DESC`),
+            pool.query(`
+                SELECT reason, count() AS count, avg(gap) AS avg_gap, avg(confidence) AS avg_confidence
+                FROM strategy_decisions
+                WHERE ${where} AND decision = 'skip'
+                GROUP BY reason
+                ORDER BY count DESC
+                LIMIT 20`),
+            pool.query(`
+                SELECT
+                  count() AS total_orders,
+                  sum(CASE WHEN status = 'filled' THEN 1 ELSE 0 END) AS filled_orders,
+                  sum(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_orders,
+                  sum(CASE WHEN status = 'canceled' THEN 1 ELSE 0 END) AS canceled_orders
+                FROM orders
+                WHERE ${where}`),
+            pool.query(`
+                SELECT avg(spread) AS avg_spread, avg(bid_liquidity) AS avg_bid_liquidity, avg(ask_liquidity) AS avg_ask_liquidity
+                FROM orderbook_snapshots
+                WHERE ${where}`),
+            pool.query(`SELECT * FROM strategy_config_snapshots WHERE ${where} ORDER BY timestamp DESC LIMIT 1`),
+            pool.query(`
+                SELECT timestamp, slug, decision, side, reason, gap, bid, ask, remaining_sec, confidence, regime
+                FROM strategy_decisions
+                WHERE ${where} AND decision IN ('enter', 'skip', 'exit', 'add', 'filled')
+                ORDER BY timestamp DESC
+                LIMIT 120`),
+            pool.query(`
+                SELECT timestamp, slug, result_side, pnl, trades
+                FROM market_results
+                WHERE ${where}
+                ORDER BY timestamp DESC
+                LIMIT 5000`),
+            pool.query(`
+                SELECT timestamp, slug, side, action, status, price, shares
+                FROM orders
+                WHERE ${where}
+                ORDER BY timestamp DESC
+                LIMIT 5000`),
+            pool.query(`
+                SELECT timestamp, slug, side, action, price, shares, order_type
+                FROM order_intents
+                WHERE ${where}
+                ORDER BY timestamp DESC
+                LIMIT 5000`)
+        ]);
+
+        const summary = summaryRes.rows[0] || {};
+        const decisions = decisionRes.rows || [];
+        const entries = decisions.filter(r => r.decision === 'enter').reduce((s, r) => s + num(r.count), 0);
+        const skips = decisions.filter(r => r.decision === 'skip').reduce((s, r) => s + num(r.count), 0);
+        const totalMarkets = num(summary.total_markets);
+        const wins = num(summary.wins);
+        const losses = num(summary.losses);
+        const grossLoss = num(summary.gross_loss);
+        const enrichedSummary = {
+            total_markets: totalMarkets,
+            total_pnl: num(summary.total_pnl),
+            expectancy: num(summary.expectancy),
+            wins,
+            losses,
+            non_zero_markets: num(summary.non_zero_markets),
+            win_rate: totalMarkets > 0 ? (wins / totalMarkets) * 100 : 0,
+            profit_factor: grossLoss > 0 ? (num(summary.gross_profit) / grossLoss).toFixed(2) : (num(summary.gross_profit) > 0 ? '∞' : '0.00'),
+            entries,
+            skips,
+        };
+
+        const orderStats = orderRes.rows[0] || {};
+        const filledOrders = num(orderStats.filled_orders);
+        const totalOrders = num(orderStats.total_orders);
+        const enrichedOrderStats = {
+            total_orders: totalOrders,
+            filled_orders: filledOrders,
+            failed_orders: num(orderStats.failed_orders),
+            canceled_orders: num(orderStats.canceled_orders),
+            fill_rate: totalOrders > 0 ? (filledOrders / totalOrders) * 100 : 0,
+        };
+
+        const spreadStats = spreadRes.rows[0] || {};
+        const equityStats = computeEquityStats(equityRes.rows || []);
+        const capital = simulateCapitalBacktest(equityRes.rows || [], buyOrdersRes.rows || [], {
+            initialBalance: num(initialBalance, 100),
+            tradeSize: num(tradeSize, 5),
+            sizingMode: String(sizingMode || 'fixed'),
+            maxSessionLoss: num(maxSessionLoss, 0),
+            maxSessionProfit: num(maxSessionProfit, 0),
+            compound: compound === true || compound === 'true',
+        });
+        const configRow = configRes.rows[0] || {};
+        const configs = Object.fromEntries(Object.entries(configRow).filter(([k]) => k.startsWith('cfg_')).map(([k, v]) => [k.replace(/^cfg_/, ''), v]));
+        const resultBySlug = new Map();
+        for (const row of candidateResultRes.rows || []) {
+            const cur = resultBySlug.get(row.slug) || { pnl: 0, outcome: 'UNKNOWN', trades: 0, timestamp: row.timestamp };
+            cur.pnl += num(row.pnl);
+            cur.trades += num(row.trades);
+            if (row.result_side && row.result_side !== 'UNKNOWN') cur.outcome = row.result_side;
+            resultBySlug.set(row.slug, cur);
+        }
+
+        const ordersBySlug = new Map();
+        for (const row of candidateOrderRes.rows || []) {
+            const cur = ordersBySlug.get(row.slug) || { filledShares: 0, orders: 0, statuses: new Set(), avgPriceNum: 0, avgPriceDen: 0 };
+            cur.orders += 1;
+            cur.statuses.add(row.status || 'unknown');
+            if (row.status === 'filled') {
+                const shares = num(row.shares);
+                cur.filledShares += shares;
+                cur.avgPriceNum += num(row.price) * shares;
+                cur.avgPriceDen += shares;
+            }
+            ordersBySlug.set(row.slug, cur);
+        }
+
+        const intentsBySlug = new Map();
+        for (const row of candidateIntentRes.rows || []) {
+            if (!intentsBySlug.has(row.slug)) intentsBySlug.set(row.slug, row);
+        }
+
+        const seenCandidates = new Set();
+        const recentCandidates = [];
+        for (const row of decisionCandidateRes.rows || []) {
+            const key = row.slug;
+            if (seenCandidates.has(key)) continue;
+            seenCandidates.add(key);
+            const result = resultBySlug.get(row.slug) || {};
+            const order = ordersBySlug.get(row.slug);
+            const intent = intentsBySlug.get(row.slug);
+            const avgFill = order?.avgPriceDen > 0 ? order.avgPriceNum / order.avgPriceDen : null;
+            const status = row.decision === 'skip'
+                ? `SKIP:${row.reason || 'unknown'}`
+                : order
+                  ? [...order.statuses].join(',')
+                  : row.decision.toUpperCase();
+            recentCandidates.push({
+                time: row.timestamp ? new Date(row.timestamp).toLocaleString() : '—',
+                slug: row.slug,
+                side: row.side || intent?.side || result.outcome || 'UNKNOWN',
+                ladder: intent ? `${intent.action || 'order'} ${Number(num(intent.shares)).toFixed(2)} @ ${Number(num(intent.price)).toFixed(2)}` : row.decision,
+                filled: order ? Number(order.filledShares.toFixed(4)).toString() : '0',
+                status,
+                outcome: result.outcome || 'UNKNOWN',
+                pnl: Number(num(result.pnl).toFixed(4)).toString(),
+                bid: row.bid === null || row.bid === undefined ? (avgFill === null ? 'n/a' : avgFill.toFixed(2)) : Number(row.bid).toFixed(2),
+                gap: row.gap === null || row.gap === undefined ? 'n/a' : Number(row.gap).toFixed(2),
+                remain: row.remaining_sec === null || row.remaining_sec === undefined ? 'n/a' : Number(row.remaining_sec).toFixed(0),
+                score: row.confidence === null || row.confidence === undefined ? (row.regime || 'n/a') : Number(row.confidence).toFixed(2),
+            });
+            if (recentCandidates.length >= 50) break;
+        }
+
+        if (recentCandidates.length === 0) {
+            for (const row of candidateResultRes.rows || []) {
+                if (recentCandidates.length >= 50) break;
+                const result = resultBySlug.get(row.slug) || row;
+                recentCandidates.push({
+                    time: row.timestamp ? new Date(row.timestamp).toLocaleString() : '—',
+                    slug: row.slug,
+                    side: result.outcome || row.result_side || 'UNKNOWN',
+                    ladder: 'market-result',
+                    filled: row.trades ?? '0',
+                    status: num(row.pnl) !== 0 ? 'RESOLVED' : 'NO_TRADE/FLAT',
+                    outcome: result.outcome || row.result_side || 'UNKNOWN',
+                    pnl: Number(num(result.pnl ?? row.pnl).toFixed(4)).toString(),
+                    bid: 'n/a',
+                    gap: 'n/a',
+                    remain: 'n/a',
+                    score: 'n/a',
+                });
+            }
+        }
+
+        const rawReport = buildBacktestReport({
+            params: { strategy: safeStrategy, asset: safeAsset, window: safeWindow, from: fromIso, to: toIso },
+            summary: enrichedSummary,
+            decisions,
+            skipReasons: skipRes.rows || [],
+            orderStats: enrichedOrderStats,
+            spreadStats,
+            configs,
+            recentCandidates,
+            equityStats,
+        });
+
+        return res.json({
+            available: true,
+            mode: 'questdb-historical-analysis',
+            pnl: fmtUsd(capital.simulatedPnl),
+            historicalPnl: fmtUsd(enrichedSummary.total_pnl),
+            endingBalance: `${capital.endingBalance.toFixed(2)} USDC`,
+            capitalSim: capital,
+            winRate: fmtPct(enrichedSummary.win_rate),
+            wins: String(enrichedSummary.wins),
+            losses: String(enrichedSummary.losses),
+            totalMarkets: String(enrichedSummary.total_markets),
+            candidates: String(enrichedSummary.entries),
+            strictFills: String(enrichedOrderStats.filled_orders),
+            resolvedFills: String(enrichedSummary.non_zero_markets),
+            expectancy: fmtUsd(enrichedSummary.expectancy),
+            profitFactor: enrichedSummary.profit_factor,
+            maxDrawdown: fmtUsd(capital.maxDrawdown),
+            missedWinners: String(enrichedSummary.skips),
+            falseEntries: String(enrichedSummary.losses),
+            averageSlippage: 'n/a',
+            orderFillRate: fmtPct(enrichedOrderStats.fill_rate),
+            averageSpread: spreadStats.avg_spread === null || spreadStats.avg_spread === undefined ? 'n/a' : Number(spreadStats.avg_spread).toFixed(4),
+            avgBidLiquidity: spreadStats.avg_bid_liquidity === null || spreadStats.avg_bid_liquidity === undefined ? 'n/a' : Number(spreadStats.avg_bid_liquidity).toFixed(2),
+            avgAskLiquidity: spreadStats.avg_ask_liquidity === null || spreadStats.avg_ask_liquidity === undefined ? 'n/a' : Number(spreadStats.avg_ask_liquidity).toFixed(2),
+            skipReasons: (skipRes.rows || []).map(r => ({ reason: r.reason, count: String(r.count), avgGap: r.avg_gap, avgConfidence: r.avg_confidence })),
+            decisionBreakdown: decisions,
+            orderStats: enrichedOrderStats,
+            configSnapshot: configs,
+            equityCurve: equityStats.equityCurve.slice(-200),
+            recentCandidates,
+            rawReport,
+            updatedAt: Date.now(),
+        });
+    } catch (e) {
+        console.warn('[questdb] backtest query failed:', e.message);
+        return res.json({ available: false, error: e.message || String(e) });
+    }
 });
 
 async function fetchJsonWithTimeout(url, timeoutMs = 4000) {

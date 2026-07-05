@@ -75,7 +75,7 @@ function pm2Delete(processId) {
 }
 
 function getStrategySpecificEngineEnv(strategy, options = {}) {
-    const { tradeAmount, prod } = options;
+    const { tradeAmount, prod, dailyDrawdownLimit } = options;
     if (strategy === 'probabilistic-edge-btc-5m-c-no') {
         return {
             MARKET_WINDOW: '5m',
@@ -100,6 +100,9 @@ function getStrategySpecificEngineEnv(strategy, options = {}) {
         };
         if (tradeAmount !== undefined && tradeAmount !== null && tradeAmount !== '') {
             env.PROB_EDGE_SHARES = String(tradeAmount);
+        }
+        if (dailyDrawdownLimit !== undefined && dailyDrawdownLimit !== null && dailyDrawdownLimit !== '') {
+            env.PROB_EDGE_DAILY_DRAWDOWN_LIMIT = String(dailyDrawdownLimit);
         }
         if (prod === true || prod === 'true') {
             env.ENABLE_RESEARCH_PROD = 'true';
@@ -272,7 +275,7 @@ async function sendHubNotification(title, message, type = 'info') {
 }
 
 app.post('/api/start', async (req, res) => {
-    const { balance, maxLoss, maxProfit, tradeAmount, strategy, tickers, rounds, tickerSources, hourlyProfitTarget, prod, extraEnv } = req.body;
+    const { balance, maxLoss, maxProfit, tradeAmount, strategy, tickers, rounds, tickerSources, hourlyProfitTarget, dailyDrawdownLimit, prod, extraEnv } = req.body;
     if (!tickers || tickers.length === 0) return res.status(400).json({ error: 'No tickers' });
 
     const configs = await getPersistedConfigs();
@@ -308,7 +311,7 @@ app.post('/api/start', async (req, res) => {
             ...(extraEnv && typeof extraEnv === 'object' ? extraEnv : {}),
             ENABLE_RESEARCH_TRADING: 'true',
             ALLOW_RESEARCH_ARTIFACT_TRADING: 'true',
-            ...getStrategySpecificEngineEnv(strategy, { tradeAmount, prod })
+            ...getStrategySpecificEngineEnv(strategy, { tradeAmount, dailyDrawdownLimit, prod })
         };
         if (prod === true || prod === 'true') {
             env.FORCE_PROD = "true";
@@ -380,7 +383,7 @@ app.post('/api/restart', async (req, res) => {
         ...(config.extraEnv && typeof config.extraEnv === 'object' ? config.extraEnv : {}),
         ENABLE_RESEARCH_TRADING: 'true',
         ALLOW_RESEARCH_ARTIFACT_TRADING: 'true',
-        ...getStrategySpecificEngineEnv(config.strategy, { tradeAmount: config.tradeAmount, prod: config.prod })
+        ...getStrategySpecificEngineEnv(config.strategy, { tradeAmount: config.tradeAmount, dailyDrawdownLimit: config.dailyDrawdownLimit, prod: config.prod })
     };
     if (config.prod === true || config.prod === 'true') {
         env.FORCE_PROD = "true";

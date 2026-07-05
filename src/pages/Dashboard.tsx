@@ -108,6 +108,7 @@ export default function Dashboard() {
     strategy: 'late-down',
     rounds: '0',
     hourlyProfitTarget: '0',
+    dailyDrawdownLimit: '5',
     tickerSources: 'binance,chainlink,coinbase',
     prod: false
   });
@@ -314,7 +315,7 @@ export default function Dashboard() {
 
   const handleLaunch = async () => {
     try {
-        const numericKeys = ['balance', 'maxLoss', 'maxProfit', 'tradeAmount', 'rounds', 'hourlyProfitTarget'];
+        const numericKeys = ['balance', 'maxLoss', 'maxProfit', 'tradeAmount', 'rounds', 'hourlyProfitTarget', 'dailyDrawdownLimit'];
         const hasInvalidNumeric = numericKeys.some(k => {
             const val = (inputs as any)[k];
             return !val || parseFloat(val) < 0;
@@ -636,6 +637,7 @@ export default function Dashboard() {
                 { name: 'maxLoss', label: 'Stop Loss', icon: <ShieldAlert /> },
                 { name: 'maxProfit', label: 'Session Target', icon: <Target /> },
                 { name: 'hourlyProfitTarget', label: 'Hourly Target (0=Off)', icon: <Clock /> },
+                { name: 'dailyDrawdownLimit', label: 'Daily Loss', icon: <ShieldAlert /> },
                 { name: 'rounds', label: 'Rounds (0=Inf)', icon: <Clock /> }
               ].map((input) => (
                 <div key={input.name} className="space-y-1">

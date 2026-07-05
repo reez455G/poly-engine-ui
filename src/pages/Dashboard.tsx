@@ -109,6 +109,8 @@ export default function Dashboard() {
     rounds: '0',
     hourlyProfitTarget: '0',
     dailyDrawdownLimit: '5',
+    probEdgeMinNotionalUsd: '1.01',
+    probEdgeMaxShares: '5',
     tickerSources: 'binance,chainlink,coinbase',
     prod: false
   });
@@ -316,7 +318,10 @@ export default function Dashboard() {
   const handleLaunch = async () => {
     try {
         const numericKeys = ['balance', 'maxLoss', 'maxProfit', 'tradeAmount', 'rounds', 'hourlyProfitTarget', 'dailyDrawdownLimit'];
-        const hasInvalidNumeric = numericKeys.some(k => {
+        const probEdgeNumericKeys = inputs.strategy === 'probabilistic-edge-btc-5m'
+          ? ['probEdgeMinNotionalUsd', 'probEdgeMaxShares']
+          : [];
+        const hasInvalidNumeric = [...numericKeys, ...probEdgeNumericKeys].some(k => {
             const val = (inputs as any)[k];
             return !val || parseFloat(val) < 0;
         });
@@ -324,10 +329,16 @@ export default function Dashboard() {
             alert("Mohon isi semua variabel dengan nilai yang valid!");
             return;
         }
+        const extraEnv = inputs.strategy === 'probabilistic-edge-btc-5m'
+          ? {
+              PROB_EDGE_MIN_NOTIONAL_USD: inputs.probEdgeMinNotionalUsd,
+              PROB_EDGE_MAX_SHARES: inputs.probEdgeMaxShares
+            }
+          : undefined;
         await fetch(`${API_BASE}/api/start`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ...inputs, tickers: selectedTickers })
+            body: JSON.stringify({ ...inputs, extraEnv, tickers: selectedTickers })
         });
         setIsRunning(true);
     } catch (e) {
@@ -663,6 +674,45 @@ export default function Dashboard() {
                   />
                 </div>
               ))}
+
+              {inputs.strategy === 'probabilistic-edge-btc-5m' && (
+                <div className="md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4 p-4 rounded-2xl bg-pink-500/5 border border-pink-500/10">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-pink-300 uppercase tracking-widest flex items-center gap-2">
+                      <Wallet className="w-3 h-3" /> Min Notional USD
+                    </label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      name="probEdgeMinNotionalUsd"
+                      value={inputs.probEdgeMinNotionalUsd}
+                      onChange={(e) => setInputs({...inputs, [e.target.name]: e.target.value})}
+                      className="w-full bg-black/40 border border-white/5 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-pink-500/50"
+                    />
+                    <p className="text-[9px] text-slate-500 leading-relaxed">
+                      Dikirim sebagai <span className="font-mono text-slate-300">PROB_EDGE_MIN_NOTIONAL_USD</span>.
+                    </p>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-pink-300 uppercase tracking-widest flex items-center gap-2">
+                      <Layers className="w-3 h-3" /> Max Shares
+                    </label>
+                    <input
+                      type="number"
+                      step="1"
+                      min="1"
+                      name="probEdgeMaxShares"
+                      value={inputs.probEdgeMaxShares}
+                      onChange={(e) => setInputs({...inputs, [e.target.name]: e.target.value})}
+                      className="w-full bg-black/40 border border-white/5 rounded-xl px-4 py-2.5 text-white text-sm focus:outline-none focus:border-pink-500/50"
+                    />
+                    <p className="text-[9px] text-slate-500 leading-relaxed">
+                      Batas auto-naik shares agar tidak overbuy. Jika min USD butuh lebih dari ini, entry di-skip.
+                    </p>
+                  </div>
+                </div>
+              )}
 
             </div>
 

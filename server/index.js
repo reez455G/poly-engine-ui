@@ -137,6 +137,14 @@ async function updatePm2StatusesCache() {
 updatePm2StatusesCache();
 setInterval(updatePm2StatusesCache, 2000);
 
+// Consecutive non-online sync cycles observed per processId. A crash-looping
+// process (e.g. autorestart recovering from a transient error) can be briefly
+// 'launching'/'errored' between two 2s cache refreshes; requiring several
+// consecutive misses (~15s) before cleanup avoids permanently deregistering
+// a process that PM2 is about to bring back online on its own.
+const nonOnlineStreak = {};
+const NON_ONLINE_STREAK_LIMIT = 3;
+
 async function syncProcessesWithPm2() {
     try {
         if (!pm2CacheLoaded) {
@@ -145,47 +153,58 @@ async function syncProcessesWithPm2() {
         }
         const configs = await getPersistedConfigs();
         let changed = false;
-        
+
         for (const processId of Object.keys(configs)) {
             const pm2Status = cachedPm2Statuses[processId];
             const config = configs[processId];
-            
+
             // Prevent race condition: skip cleanup if configuration was created in the last 10 seconds
             const ageMs = Date.now() - (config?.startTime || 0);
             if (ageMs < 10000) continue;
-            
-            // If the process is not running (either stopped, errored, or deleted/not found in pm2 list)
-            if (!pm2Status || pm2Status !== 'online') {
-                console.log(`Process ${processId} is not online (status: ${pm2Status || 'not found'}). Cleaning up...`);
-                
-                const state = getLatestState(config.strategy, config.asset);
-                
-                // Save to session history
-                await saveSession({
-                    processId,
-                    asset: config.asset,
-                    strategy: config.strategy,
-                    config,
-                    stats: state ? {
-                        pnl: state.sessionPnl,
-                        trades: state.completedMarkets?.length,
-                        hourlyPnl: state.hourlyPnl,
-                        hourlyProfitTarget: state.hourlyProfitTarget || config.hourlyProfitTarget,
-                        hourlyEntryPaused: state.hourlyEntryPaused,
-                        hourlyResetAtMs: state.hourlyResetAtMs,
-                        hourlyResetCount: state.hourlyResetCount || 0
-                    } : null,
-                    endTime: Date.now(),
-                    exitCode: pm2Status === 'stopped' ? 0 : 1
-                });
-                
-                // Remove from configs
-                delete configs[processId];
-                changed = true;
-                
-                // Delete from PM2 so it doesn't clutter the list
-                await pm2Delete(processId);
+
+            if (pm2Status === 'online') {
+                nonOnlineStreak[processId] = 0;
+                continue;
             }
+
+            nonOnlineStreak[processId] = (nonOnlineStreak[processId] || 0) + 1;
+            if (nonOnlineStreak[processId] < NON_ONLINE_STREAK_LIMIT) {
+                console.log(`Process ${processId} is not online (status: ${pm2Status || 'not found'}), streak ${nonOnlineStreak[processId]}/${NON_ONLINE_STREAK_LIMIT}. Waiting before cleanup...`);
+                continue;
+            }
+
+            // Process has been non-online for NON_ONLINE_STREAK_LIMIT consecutive
+            // checks (stopped, errored, or deleted/not found in pm2 list) -- clean up.
+            console.log(`Process ${processId} is not online (status: ${pm2Status || 'not found'}). Cleaning up...`);
+
+            const state = getLatestState(config.strategy, config.asset);
+
+            // Save to session history
+            await saveSession({
+                processId,
+                asset: config.asset,
+                strategy: config.strategy,
+                config,
+                stats: state ? {
+                    pnl: state.sessionPnl,
+                    trades: state.completedMarkets?.length,
+                    hourlyPnl: state.hourlyPnl,
+                    hourlyProfitTarget: state.hourlyProfitTarget || config.hourlyProfitTarget,
+                    hourlyEntryPaused: state.hourlyEntryPaused,
+                    hourlyResetAtMs: state.hourlyResetAtMs,
+                    hourlyResetCount: state.hourlyResetCount || 0
+                } : null,
+                endTime: Date.now(),
+                exitCode: pm2Status === 'stopped' ? 0 : 1
+            });
+
+            // Remove from configs
+            delete configs[processId];
+            delete nonOnlineStreak[processId];
+            changed = true;
+
+            // Delete from PM2 so it doesn't clutter the list
+            await pm2Delete(processId);
         }
         
         if (changed) {

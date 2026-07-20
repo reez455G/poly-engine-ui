@@ -461,7 +461,7 @@ export default function Dashboard() {
           </div>
           <div className="grid grid-cols-1 gap-4">
               <div className="min-w-0 text-[11px] text-slate-400 font-mono space-y-1.5">
-                <div className="grid grid-cols-[64px_minmax(0,1fr)] gap-2"><span className="text-slate-500">Strategy</span><span className="text-white truncate" title={cnf.strategy}>{cnf.strategy}</span></div>
+                <div className="grid grid-cols-[64px_minmax(0,1fr)] gap-2"><span className="text-slate-500">Strategy</span><span className="text-white truncate" title={cnf.strategy}>{cnf.strategy}{cnf.extraEnv?.MARKET_WINDOW && cnf.extraEnv.MARKET_WINDOW !== '5m' ? ` (${cnf.extraEnv.MARKET_WINDOW})` : ''}</span></div>
                 <div className="grid grid-cols-[64px_minmax(0,1fr)] gap-2"><span className="text-slate-500">Ticker</span><span className="text-cyan-300 truncate" title={cnf.tickerSources || 'binance,chainlink,coinbase'}>{cnf.tickerSources || 'binance,chainlink,coinbase'}</span></div>
                 <div className="grid grid-cols-[64px_minmax(0,1fr)] gap-2"><span className="text-slate-500">Runtime</span><span className="text-pink-300 truncate font-semibold" title={formatTimeRunning(cnf.startTime)}>{formatTimeRunning(cnf.startTime)}</span></div>
                 <div className="grid grid-cols-[64px_minmax(0,1fr)] gap-2">

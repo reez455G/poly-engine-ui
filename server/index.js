@@ -93,6 +93,65 @@ function getStrategySpecificEngineEnv(strategy, options = {}) {
             BYES_MAX_ENTRY_REMAINING_SEC: '60'
         };
     }
+    // Loop-55: ARM-1 live-sim strategies (parallel to incumbent, sim-mode only).
+    if (strategy === 'probabilistic-edge-btc-5m-arm1-a-t05') {
+        return {
+            MARKET_WINDOW: '5m',
+            ENABLE_ARM1_A_T05_SIM: 'true',
+            ARM1_A_T05_EDGE_THRESHOLD: '0.05',
+            ARM1_A_T05_MIN_GAP_BPS: '4',
+            ARM1_A_T05_MAX_ENTRY_REMAINING_SEC: '60'
+        };
+    }
+    if (strategy === 'probabilistic-edge-btc-5m-arm1-a-t20') {
+        return {
+            MARKET_WINDOW: '5m',
+            ENABLE_ARM1_A_T20_SIM: 'true',
+            ARM1_A_T20_EDGE_THRESHOLD: '0.20',
+            ARM1_A_T20_MIN_GAP_BPS: '4',
+            ARM1_A_T20_MAX_ENTRY_REMAINING_SEC: '60'
+        };
+    }
+    if (strategy === 'probabilistic-edge-btc-5m-arm1-b') {
+        return {
+            MARKET_WINDOW: '5m',
+            ENABLE_ARM1_B_SIM: 'true',
+            ARM1_B_EDGE_THRESHOLD: '0.05',
+            ARM1_B_MAX_ENTRY_REMAINING_SEC: '60'
+        };
+    }
+    if (strategy === 'probabilistic-edge-btc-5m-arm1-c') {
+        return {
+            MARKET_WINDOW: '5m',
+            ENABLE_ARM1_C_SIM: 'true',
+            ARM1_C_EDGE_THRESHOLD: '0.00',
+            ARM1_C_MIN_DOWN_ASK: '0.85',
+            ARM1_C_MAX_DOWN_ASK: '0.85',
+            ARM1_C_MAX_ENTRY_REMAINING_SEC: '60'
+        };
+    }
+    // Loop-56 Track 2: C-NO ask-band A/B comparison, run in parallel (same pattern
+    // as arm1-a-t05/arm1-a-t20).
+    if (strategy === 'probabilistic-edge-btc-5m-arm1-c-t075-095') {
+        return {
+            MARKET_WINDOW: '5m',
+            ENABLE_ARM1_C_T075_095_SIM: 'true',
+            ARM1_C_T075_095_EDGE_THRESHOLD: '0.00',
+            ARM1_C_T075_095_MIN_DOWN_ASK: '0.75',
+            ARM1_C_T075_095_MAX_DOWN_ASK: '0.95',
+            ARM1_C_T075_095_MAX_ENTRY_REMAINING_SEC: '60'
+        };
+    }
+    if (strategy === 'probabilistic-edge-btc-5m-arm1-c-t085-085') {
+        return {
+            MARKET_WINDOW: '5m',
+            ENABLE_ARM1_C_T085_085_SIM: 'true',
+            ARM1_C_T085_085_EDGE_THRESHOLD: '0.00',
+            ARM1_C_T085_085_MIN_DOWN_ASK: '0.85',
+            ARM1_C_T085_085_MAX_DOWN_ASK: '0.85',
+            ARM1_C_T085_085_MAX_ENTRY_REMAINING_SEC: '60'
+        };
+    }
     if (strategy === 'probabilistic-edge-btc-5m') {
         const env = {
             MARKET_WINDOW: '5m',
@@ -188,7 +247,7 @@ async function syncProcessesWithPm2() {
             // checks (stopped, errored, or deleted/not found in pm2 list) -- clean up.
             console.log(`Process ${processId} is not online (status: ${pm2Status || 'not found'}). Cleaning up...`);
 
-            const state = getLatestState(config.strategy, config.asset);
+            const state = getLatestState(config.strategy, config.asset, config.extraEnv?.MARKET_WINDOW);
 
             // Save to session history
             await saveSession({
@@ -247,22 +306,27 @@ async function saveSession(session) {
     await redis.set('poly_sessions', JSON.stringify(sessions.slice(0, 100)));
 }
 
-function getLatestState(strategy, asset) {
+function getLatestState(strategy, asset, window) {
     const stateDir = path.join(ENGINE_PATH, 'state');
     try {
         if (!fs.existsSync(stateDir)) return null;
-        
+
+        // Loop-56: engine/early-bird.ts only suffixes the state filename for a
+        // non-default window (5m stays unsuffixed) -- mirror that here so a 15m
+        // process's dashboard state doesn't silently read its 5m sibling's file.
+        const windowSuffix = window && window !== '5m' ? `-${window}` : '';
+
         const possibleFiles = [];
         if (asset) {
-            possibleFiles.push(`early-bird-${strategy}-${asset}.json`);
-            possibleFiles.push(`early-bird-${strategy}-${asset}-prod.json`);
+            possibleFiles.push(`early-bird-${strategy}-${asset}${windowSuffix}.json`);
+            possibleFiles.push(`early-bird-${strategy}-${asset}${windowSuffix}-prod.json`);
             if (asset === 'btc') {
-                possibleFiles.push(`early-bird-${strategy}.json`);
-                possibleFiles.push(`early-bird-${strategy}-prod.json`);
+                possibleFiles.push(`early-bird-${strategy}${windowSuffix}.json`);
+                possibleFiles.push(`early-bird-${strategy}${windowSuffix}-prod.json`);
             }
         } else {
-            possibleFiles.push(`early-bird-${strategy}.json`);
-            possibleFiles.push(`early-bird-${strategy}-prod.json`);
+            possibleFiles.push(`early-bird-${strategy}${windowSuffix}.json`);
+            possibleFiles.push(`early-bird-${strategy}${windowSuffix}-prod.json`);
         }
 
         const existingFiles = possibleFiles
@@ -437,7 +501,7 @@ app.get('/api/status', async (req, res) => {
     
     Object.keys(configs).forEach(processId => {
         const config = configs[processId];
-        const state = getLatestState(config.strategy, config.asset);
+        const state = getLatestState(config.strategy, config.asset, config.extraEnv?.MARKET_WINDOW);
         status[processId] = {
             isRunning: cachedPm2Statuses[processId] === 'online',
             config: config,

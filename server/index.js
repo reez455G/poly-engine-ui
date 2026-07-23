@@ -247,7 +247,7 @@ async function syncProcessesWithPm2() {
             // checks (stopped, errored, or deleted/not found in pm2 list) -- clean up.
             console.log(`Process ${processId} is not online (status: ${pm2Status || 'not found'}). Cleaning up...`);
 
-            const state = getLatestState(config.strategy, config.asset, config.extraEnv?.MARKET_WINDOW);
+            const state = getLatestState(config.strategy, config.asset, config.extraEnv?.MARKET_WINDOW, config.prod);
 
             // Save to session history
             await saveSession({
@@ -306,7 +306,16 @@ async function saveSession(session) {
     await redis.set('poly_sessions', JSON.stringify(sessions.slice(0, 100)));
 }
 
-function getLatestState(strategy, asset, window) {
+// `prod` scopes the lookup to the state file matching the process's mode. Without
+// it, a strategy running in both modes (e.g. a PROD process plus a sim twin for
+// side-by-side comparison) has two state files whose names differ only by the
+// `-prod` suffix, both rewritten every 5s -- picking by mtime alone then
+// flip-flops between them, so the dashboard intermittently shows the wrong
+// session (empty PnL, "No settled position") and syncProcessesWithPm2 can archive
+// a finished PROD session with the sim's numbers. Falls back to the previous
+// mtime-only behaviour when no file matches the requested mode, so callers that
+// don't know the mode keep working unchanged.
+function getLatestState(strategy, asset, window, prod) {
     const stateDir = path.join(ENGINE_PATH, 'state');
     try {
         if (!fs.existsSync(stateDir)) return null;
@@ -329,7 +338,13 @@ function getLatestState(strategy, asset, window) {
             possibleFiles.push(`early-bird-${strategy}${windowSuffix}-prod.json`);
         }
 
-        const existingFiles = possibleFiles
+        const wantProd = prod === true || prod === 'true';
+        const scoped = prod === undefined
+            ? possibleFiles
+            : possibleFiles.filter(f => f.endsWith('-prod.json') === wantProd);
+        const candidates = scoped.length ? scoped : possibleFiles;
+
+        const existingFiles = candidates
             .filter(filename => fs.existsSync(path.join(stateDir, filename)))
             .map(filename => ({
                 name: filename,
@@ -501,7 +516,7 @@ app.get('/api/status', async (req, res) => {
     
     Object.keys(configs).forEach(processId => {
         const config = configs[processId];
-        const state = getLatestState(config.strategy, config.asset, config.extraEnv?.MARKET_WINDOW);
+        const state = getLatestState(config.strategy, config.asset, config.extraEnv?.MARKET_WINDOW, config.prod);
         status[processId] = {
             isRunning: cachedPm2Statuses[processId] === 'online',
             config: config,
